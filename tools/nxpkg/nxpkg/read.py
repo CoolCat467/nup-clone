@@ -170,6 +170,17 @@ class NxpReader:
                     raise F.NxpError(f"package {p.index}: exefs/romfs dir out of bounds")
             if p.meta_size and (p.meta_offset + p.meta_size > file_size):
                 raise F.NxpError(f"package {p.index}: meta block out of bounds")
+            if p.flags & ~F.PKG_FLAG_STANDALONE_UPDATE:
+                raise F.NxpError(f"package {p.index}: unknown package flags {p.flags:#x}")
+        # SPEC §4.1.2: update packages need a base in the same container, or
+        # the standalone_update flag (record flags, offset 0x19, bit 0).
+        has_base = any(p.kind == F.KIND_BASE for p in self.packages)
+        for p in self.packages:
+            if (p.kind == F.KIND_UPDATE and not has_base
+                    and not (p.flags & F.PKG_FLAG_STANDALONE_UPDATE)):
+                raise F.NxpError(
+                    f"package {p.index}: update without base in container and "
+                    f"standalone_update flag not set")
 
     # ---- tree access ----
 

@@ -73,11 +73,13 @@ class FileObj:
 class PackInput:
     """One package to store: kind, ids, and the source directory of its tree."""
 
-    def __init__(self, kind: int, src: str, title_id: int = 0, version: int = 0) -> None:
+    def __init__(self, kind: int, src: str, title_id: int = 0, version: int = 0,
+                 flags: int = 0) -> None:
         self.kind = kind
         self.src = src
         self.title_id = title_id
         self.version = version
+        self.flags = flags
         self.npdm: bytes | None = None
 
 
@@ -105,25 +107,49 @@ def _looks_like_content(d: str) -> bool:
     return os.path.isdir(os.path.join(d, "exefs")) or os.path.isdir(os.path.join(d, "romfs"))
 
 
+def _collect_updates(upd_dir: str, base_title_id: int, flags: int) -> list[PackInput]:
+    """updates/<decimal version>/ content dirs; flags propagates standalone_update."""
+    out: list[PackInput] = []
+    for name in sorted(os.listdir(upd_dir)):
+        p = os.path.join(upd_dir, name)
+        if not _DEC.match(name) or not os.path.isdir(p) or not _looks_like_content(p):
+            continue
+        upd = PackInput(F.KIND_UPDATE, p, version=int(name, 10), flags=flags)
+        _resolve_title_id(upd, None)
+        if upd.title_id == 0:
+            upd.title_id = base_title_id
+        out.append(upd)
+    return out
+
+
 def discover(src: str, base_title_id: int | None) -> list[PackInput]:
     """Discover packages in a dump directory (SPEC §4.1.3 conventions)."""
     packages: list[PackInput] = []
+    upd_dir = os.path.join(src, "updates")
+    has_updates = os.path.isdir(upd_dir)
 
     if os.path.isdir(os.path.join(src, "base")):
         base = PackInput(F.KIND_BASE, os.path.join(src, "base"))
         _resolve_title_id(base, base_title_id)
         packages.append(base)
-        upd_dir = os.path.join(src, "updates")
-        if os.path.isdir(upd_dir):
-            for name in sorted(os.listdir(upd_dir)):
-                p = os.path.join(upd_dir, name)
-                if not _DEC.match(name) or not os.path.isdir(p) or not _looks_like_content(p):
+        if has_updates:
+            packages.extend(_collect_updates(upd_dir, base.title_id, flags=0))
+        dlc_dir = os.path.join(src, "dlc")
+        if os.path.isdir(dlc_dir):
+            for name in sorted(os.listdir(dlc_dir)):
+                tdir = os.path.join(dlc_dir, name)
+                if not _HEX.match(name) or not os.path.isdir(tdir):
                     continue
-                upd = PackInput(F.KIND_UPDATE, p, version=int(name, 10))
-                _resolve_title_id(upd, None)
-                if upd.title_id == 0:
-                    upd.title_id = base.title_id
-                packages.append(upd)
+                for idx in sorted(os.listdir(tdir)):
+                    cdir = os.path.join(tdir, idx)
+                    if os.path.isdir(cdir) and _looks_like_content(cdir):
+                        packages.append(PackInput(F.KIND_ADDON, cdir, title_id=int(name, 16)))
+    elif has_updates:
+        # Update-only dump (e.g. an update exported without its base game):
+        # every update package carries standalone_update (SPEC §4.1.2, flags
+        # bit 0 at offset 0x19). DLC may still ride along in dlc/.
+        packages.extend(_collect_updates(upd_dir, base_title_id or 0,
+                                         flags=F.PKG_FLAG_STANDALONE_UPDATE))
         dlc_dir = os.path.join(src, "dlc")
         if os.path.isdir(dlc_dir):
             for name in sorted(os.listdir(dlc_dir)):
@@ -140,8 +166,10 @@ def discover(src: str, base_title_id: int | None) -> list[PackInput]:
         packages.append(base)
     else:
         raise SystemExit(
-            f"pack: {src!r} is neither a dump bundle (base/updates/dlc) nor a content "
-            f"directory (exefs/ or romfs/)")
+            f"pack: {src!r} is neither a dump bundle (base/updates/dlc), an update-only "
+            f"dump (updates/), nor a content directory (exefs/ or romfs/)")
+    if not packages:
+        raise SystemExit(f"pack: no packages found in {src!r}")
     return packages
 
 
@@ -308,7 +336,7 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
     pkg_records: list[F.Package] = []
     for pkg, root in zip(packages, roots):
         rec = F.Package(title_id=pkg.title_id, root_dir=root.id, version=pkg.version,
-                        kind=pkg.kind)
+                        kind=pkg.kind, flags=pkg.flags)
         for child in root.children:
             if isinstance(child, DirObj):
                 if child.name == b"exefs":

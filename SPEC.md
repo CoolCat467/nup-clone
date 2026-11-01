@@ -5,7 +5,7 @@
 NXP is a clean-room container format for **unencrypted NX (Nintendo Switch 1/2) game dumps**.
 
 It stores ExeFS program files and full RomFS trees, this means it stores updates, base content 
-and addons/dlcs in one compressed file.
+and addons in one compressed file.
 
 It can be used for either Switch 1 or Switch 2 games, of course that means you would have to
 decrypt the game and package it into an nxp. (which i am not aware of for Switch 1 Games).
@@ -18,7 +18,7 @@ decrypt the game and package it into an nxp. (which i am not aware of for Switch
 ┌─────────────────────────────┐ offset 0x00
 │ Superblock (0x80 bytes)     │  magic, sizes, TOC hash, UUID
 ├─────────────────────────────┤ offset = header_size (0x80)
-│ Table of Contents (TOC)     │  string pool · package records · node arrays
+│ Table of Contents (TOC)     │  string pool - package records - node arrays
 ├─────────────────────────────┤ offset = blob_offset (16-byte aligned)
 │ Blob region                 │  concatenated file extents (raw or zstd)
 └─────────────────────────────┘ file_size
@@ -50,7 +50,7 @@ struct NxpSuperblock {           // offset  size
 };                               // total  0x80
 ```
 
-Validation rules for a reader:
+Validation rules:
 
 1. `magic` is `NXP\x01` (byte 3 is the major version this file obeys).
 2. `header_size >= 0x80`; fields beyond v1's 0x80 (if `header_version > 1`) are ignored.
@@ -61,24 +61,17 @@ Validation rules for a reader:
 
 ### 3.1 UUID
 
-The UUID makes packages addressable by managers/libraries without parsing titles, and makes
-builds reproducible. It is **derived, not random**:
-
 ```
 uuid[0..16] = SHA-256( concat over packages, in TOC order:
                          title_id(u64 LE) ‖ version(u32 LE) ‖ kind(u8) ) [0..16]
 ```
 
-Identical logical content ⇒ identical UUID. Two different dumps of the same title+version
-repack to the same UUID; that is intentional (UUID identifies *logical* content, TOC hash
-identifies *this file*).
-
 ---
 
 ## 4. Table of Contents
 
-One contiguous region starting at `toc_offset`. Internal offsets are **relative to the TOC
-start**. Layout:
+Contiguous region starting at `toc_offset`. 
+Offsets **relative to the TOC start**.
 
 ```c
 struct NxpToc {
@@ -99,8 +92,6 @@ struct NxpToc {
 
 ### 4.1 Package record — `NxpPackage` (0x40 bytes)
 
-One record per stored content unit (base program, update, add-on content, …).
-
 ```c
 struct NxpPackage {              // offset  size
     uint64_t title_id;           // 0x00   8   raw 64-bit application/add-on ID, verbatim from dump
@@ -109,7 +100,7 @@ struct NxpPackage {              // offset  size
     uint32_t romfs_dir;          // 0x10   4   index into dirs[], or 0xFFFFFFFF
     uint32_t version;            // 0x14   4   NCM content version, verbatim (see §4.1.1)
     uint8_t  kind;               // 0x18   1   see §4.1.2
-    uint8_t  flags;              // 0x19   1   0 for v1
+    uint8_t  flags;              // 0x19   1   bit0 = standalone_update (§4.1.2); other bits zero for v1
     uint16_t reserved;           // 0x1A   2   zero
     uint64_t meta_offset;        // 0x1C   8   absolute file offset of meta block, or 0
     uint32_t meta_size;          // 0x24   4   meta block size in bytes, or 0
@@ -120,12 +111,13 @@ struct NxpPackage {              // offset  size
 
 #### 4.1.1 Version encoding
 
-`version` is stored **verbatim** as the u32 that dump tools expose (the NCM application
-version). For Switch-era titles the conventional packing is
-`version = (major << 16) | (minor << 8) | micro`, e.g. directory `458752` (0x70000) ⇒ 7.0.0.
-Producers MUST additionally store a human-readable display version in the package meta block
-(TLV 0x0004) whenever it is known, because a few titles are known to encode versions
-non-standardly. Readers MUST treat `version` as opaque.
+`version` is stored as the u32 that dump tools export (NCM application
+version).
+Packing is `version = (major << 16) | (minor << 8) | micro`, 
+e.g. directory `458752` (0x70000) ⇒ 7.0.0.
+Producers additionally store a display version in the package meta block
+(TLV 0x0004), because a few titles are known to encode versions non-standardly. 
+Readers treat `version` as opaque.
 
 #### 4.1.2 Package kinds
 
@@ -135,12 +127,14 @@ non-standardly. Readers MUST treat `version` as opaque.
 | 1 | `update` | patch program for a base (a container may hold several, distinct `version`s) |
 | 2 | `addon`  | add-on content (DLC), own `title_id` |
 | 3 | `addon_update` | reserved |
-| 4 | `system` | reserved for future system-data packages |
+| 4 | `system` | reserved for future system-data packages (mew) |
 | 5–255 | reserved |
 
-Rules: a container MUST contain at most one `base` package. `update` packages MUST NOT
-appear without their `base` in the same file **or** be marked standalone via flags bit 0
+Rules: a container contains at most one `base` package however in the case that a dump
+does not contain a base package, they must be marked standalone via flags bit 0.
 (`standalone_update`, used for update-only dumps; consumers need a matching base elsewhere).
+The bit is package record `flags`, offset `0x19`, bit 0 (value `0x01`) — set it on **every**
+`update` package in a base-less container, and leave it clear when the container has a base.
 `addon` packages carry their add-on `title_id` (e.g. Switch 1 `0100…801`, Switch 2 `0400…3001`).
 
 #### 4.1.3 Canonical tree shape

@@ -87,6 +87,8 @@ def _cmd_info(args: argparse.Namespace) -> int:
             label = f" {name!r}" if name else ""
             if pub:
                 label += f" by {pub!r}"
+            if p.kind == F.KIND_UPDATE and (p.flags & F.PKG_FLAG_STANDALONE_UPDATE):
+                label += " [standalone]"
             print(f"  [{p.index}] {p.kind_name:<6} {p.title_id:016X} "
                   f"v{p.version} ({p.version_str}){label}")
             loc = r.localized_titles(p)
