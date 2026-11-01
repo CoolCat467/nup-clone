@@ -1,16 +1,16 @@
 [project]
-name = "nxpkg"
+name = "nup"
 version = "0.1.0"
-description = "Reference implementation of the NXP (NX Package) container format for Switch 1/2 game dumps"
+description = "Reference implementation of the NUP (NX Package) container format for Switch 1/2 game dumps"
 requires-python = ">=3.10"
 dependencies = ["zstandard>=0.22"]
 
 [project.scripts]
-nxpkg = "nxpkg.cli:main"
+nup = "nup.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["nxpkg*"]
+include = ["nup*"]

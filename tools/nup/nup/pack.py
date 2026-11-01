@@ -1,4 +1,4 @@
-"""NXP packer: dump directory tree -> .nxp container.
+"""NUP packer: dump directory tree -> .nup container.
 
 Implements the producer conformance rules of SPEC.md v1:
 - canonical tree shape (exefs/, romfs/), .listing artifacts excluded

@@ -1,4 +1,4 @@
-"""NXP (NX Package) format constants and binary layout.
+"""NUP (NX Package) format constants and binary layout.
 
 Implements SPEC.md v1 exactly. All integers little-endian. All reserved
 fields must be zero on write and are validated on read.
@@ -9,7 +9,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 
-MAGIC = b"NXP\x01"  # 'N','X','P', format major version 1
+MAGIC = b"NUP\x01"  # 'N','U','P', format major version 1
 TOC_MAGIC = b"TOC\x01"
 HEADER_SIZE = 0x80
 PKG_SIZE = 0x40
@@ -57,8 +57,8 @@ _toc_head_s = struct.Struct("<4sIQQQQQ")  # 48
 _tlv_s = struct.Struct("<HHI")  # 8
 
 
-class NxpError(Exception):
-    """Malformed or nonconforming NXP data (fail closed)."""
+class NupError(Exception):
+    """Malformed or nonconforming NUP data (fail closed)."""
 
 
 @dataclass
@@ -119,19 +119,19 @@ def pack_file(f: FileNode) -> bytes:
 
 def parse_super(buf: bytes) -> dict:
     if len(buf) < HEADER_SIZE:
-        raise NxpError(f"superblock truncated: {len(buf)} < {HEADER_SIZE}")
+        raise NupError(f"superblock truncated: {len(buf)} < {HEADER_SIZE}")
     (magic, header_size, header_version, toc_offset, toc_size, toc_sha256,
      blob_offset, file_size, package_count, flags, uuid, reserved) = _super_s.unpack_from(buf, 0)
     if magic[0:3] != MAGIC[0:3]:
-        raise NxpError(f"bad magic {magic!r}, expected {MAGIC[0:3]!r}")
+        raise NupError(f"bad magic {magic!r}, expected {MAGIC[0:3]!r}")
     if magic[3] != 1:
-        raise NxpError(f"unsupported format major version {magic[3]}")
+        raise NupError(f"unsupported format major version {magic[3]}")
     if header_size < HEADER_SIZE:
-        raise NxpError(f"header_size {header_size:#x} < {HEADER_SIZE:#x}")
+        raise NupError(f"header_size {header_size:#x} < {HEADER_SIZE:#x}")
     if reserved != b"\0" * 32:
-        raise NxpError("superblock reserved bytes not zero")
+        raise NupError("superblock reserved bytes not zero")
     if flags != 0:
-        raise NxpError(f"unknown superblock flags {flags:#x}")
+        raise NupError(f"unknown superblock flags {flags:#x}")
     return dict(header_size=header_size, header_version=header_version,
                 toc_offset=toc_offset, toc_size=toc_size, toc_sha256=toc_sha256,
                 blob_offset=blob_offset, file_size=file_size,
@@ -142,9 +142,9 @@ def parse_pkg(buf: bytes, off: int) -> Package:
     (title_id, root, exefs, romfs, version, kind, flags, _r,
      meta_offset, meta_size, _r2) = _pkg_s.unpack_from(buf, off)
     if kind >= len(KIND_NAMES):
-        raise NxpError(f"unknown package kind {kind}")
+        raise NupError(f"unknown package kind {kind}")
     if _r != 0 or _r2 != 0:
-        raise NxpError("package reserved bytes not zero")
+        raise NupError("package reserved bytes not zero")
     return Package(title_id=title_id, root_dir=root, exefs_dir=exefs, romfs_dir=romfs,
                    version=version, kind=kind, flags=flags,
                    meta_offset=meta_offset, meta_size=meta_size)

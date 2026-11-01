@@ -1,4 +1,4 @@
-"""nxpkg - reference CLI for the NXP (NX Package) format."""
+"""nup - reference CLI for the NUP (NX Package) format."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import time
 
 from . import format as F
 from .pack import pack
-from .read import NxpReader
+from .read import NupReader
 from .verify import verify
 
 
@@ -21,7 +21,7 @@ def _parse_kv_flags(default: str | None, lang_flags: list[str], what: str
     for item in lang_flags or []:
         lang, sep, value = item.partition("=")
         if not sep or not value:
-            raise SystemExit(f"nxpkg: --lang-{what} expects LANG=VALUE, got {item!r}")
+            raise SystemExit(f"nup: --lang-{what} expects LANG=VALUE, got {item!r}")
         out[lang.lower()] = value
     return out
 
@@ -53,7 +53,7 @@ def _cmd_pack(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_tree(r: NxpReader, dir_index: int, prefix: str, max_depth: int, depth: int = 0,
+def _print_tree(r: NupReader, dir_index: int, prefix: str, max_depth: int, depth: int = 0,
                 show_files: bool = True) -> None:
     for child in r.iter_children(dir_index):
         label = child.name.decode("utf-8", "surrogateescape")
@@ -70,11 +70,11 @@ def _print_tree(r: NxpReader, dir_index: int, prefix: str, max_depth: int, depth
 
 
 def _cmd_info(args: argparse.Namespace) -> int:
-    with NxpReader(args.file) as r:
+    with NupReader(args.file) as r:
         s = r.super
         uuid = s["uuid"].hex()
         print(f"file:      {args.file}")
-        print(f"version:   NXP v1 (header 0x{s['header_size']:x}, v{s['header_version']})")
+        print(f"version:   NUP v1 (header 0x{s['header_size']:x}, v{s['header_version']})")
         print(f"size:      {s['file_size']:,} bytes")
         print(f"uuid:      {uuid[:8]}-{uuid[8:12]}-{uuid[12:16]}")
         print(f"toc:       @{s['toc_offset']:#x} +{s['toc_size']:,} B")
@@ -108,7 +108,7 @@ def _cmd_info(args: argparse.Namespace) -> int:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    with NxpReader(args.file) as r:
+    with NupReader(args.file) as r:
         for fi, (name, size, sha, eoff, esz, codec) in enumerate(r.files):
             tag = "zstd" if codec == F.CODEC_ZSTD else ("raw" if size else "empty")
             print(f"{fi:>8}  {size:>12}  {tag:<4}  {name.decode('utf-8', 'surrogateescape')}")
@@ -116,7 +116,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_extract(args: argparse.Namespace) -> int:
-    with NxpReader(args.file) as r:
+    with NupReader(args.file) as r:
         pkg = r.find_package(kind=_kind_arg(args.package)) if args.package else r.packages[0]
         if pkg is None:
             print(f"extract: no package matches {args.package!r}", file=sys.stderr)
@@ -160,12 +160,12 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="nxpkg", description="NXP (NX Package) container tool")
+    ap = argparse.ArgumentParser(prog="nup", description="NUP (NX Package) container tool")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("pack", help="pack a dump directory into an .nxp")
+    p = sub.add_parser("pack", help="pack a dump directory into an .nup")
     p.add_argument("source", help="dump dir (base/updates/dlc layout, or a content dir)")
-    p.add_argument("output", help="output .nxp path")
+    p.add_argument("output", help="output .nup path")
     p.add_argument("--level", type=int, default=3, help="zstd level (default 3)")
     p.add_argument("--title-id", help="override base title ID (16 hex digits)")
     p.add_argument("--display-version", help="store a display version string in meta")
@@ -205,8 +205,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         return args.fn(args)
-    except F.NxpError as e:
-        print(f"nxpkg: error: {e}", file=sys.stderr)
+    except F.NupError as e:
+        print(f"nup: error: {e}", file=sys.stderr)
         return 2
 
 

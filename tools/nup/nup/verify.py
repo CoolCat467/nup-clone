@@ -1,19 +1,19 @@
-"""NXP verifier: structural conformance + deep content verification."""
+"""NUP verifier: structural conformance + deep content verification."""
 
 from __future__ import annotations
 
 import hashlib
 
 from . import format as F
-from .read import NxpReader
+from .read import NupReader
 
 
 def verify(path: str, deep: bool = False) -> tuple[bool, list[str]]:
     """Returns (ok, problems). `deep` recomputes every file's SHA-256."""
     problems: list[str] = []
     try:
-        r = NxpReader(path)
-    except F.NxpError as e:
+        r = NupReader(path)
+    except F.NupError as e:
         return False, [f"open: {e}"]
 
     def fail(msg: str) -> None:
@@ -71,7 +71,7 @@ def verify(path: str, deep: bool = False) -> tuple[bool, list[str]]:
         for fi, (name, size, sha, eoff, esz, codec) in enumerate(r.files):
             try:
                 data = r.read_file(fi)
-            except F.NxpError as e:
+            except F.NupError as e:
                 fail(f"file {fi} ({name!r}): read failed: {e}")
                 continue
             if hashlib.sha256(data).digest() != sha:

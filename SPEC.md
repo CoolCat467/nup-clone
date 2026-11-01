@@ -1,14 +1,14 @@
-# NXP - NX Package Format
+# NUP - NX Package Format
 
-**Version:** 1.0-draft · **Extension:** `.nxp` · **Magic:** `NXP\x01`
+**Version:** 1.0-draft · **Extension:** `.nup` · **Magic:** `NUP\x01`
 
-NXP is a clean-room container format for **unencrypted NX (Nintendo Switch 1/2) game dumps**.
+NUP is a clean-room container format for **unencrypted NX (Nintendo Switch 1/2) game dumps**.
 
 It stores ExeFS program files and full RomFS trees, this means it stores updates, base content 
 and addons in one compressed file.
 
 It can be used for either Switch 1 or Switch 2 games, of course that means you would have to
-decrypt the game and package it into an nxp. (which i am not aware of for Switch 1 Games).
+decrypt the game and package it into an nup. (which i am not aware of for Switch 1 Games).
 
 ---
 
@@ -34,15 +34,15 @@ All strings are **UTF-8** (producers should emit NFC).
 Exactly 0x80 bytes at offset 0.
 
 ```c
-struct NxpSuperblock {           // offset  size
-    uint8_t  magic[4];           // 0x00   4    'N','X','P', format_major_version (1)
+struct NupSuperblock {           // offset  size
+    uint8_t  magic[4];           // 0x00   4    'N','U','P', format_major_version (1)
     uint16_t header_size;        // 0x04   2    = 0x80 for v1
     uint16_t header_version;     // 0x06   2    = 1
     uint64_t toc_offset;         // 0x08   8    == header_size in v1
     uint64_t toc_size;           // 0x10   8    bytes
     uint8_t  toc_sha256[32];     // 0x18  32    SHA-256 over the whole TOC region
     uint64_t blob_offset;        // 0x38   8    start of blob region, 16-byte aligned
-    uint64_t file_size;          // 0x40   8    total size of this .nxp file
+    uint64_t file_size;          // 0x40   8    total size of this .nup file
     uint32_t package_count;      // 0x48   4    number of package records
     uint32_t flags;              // 0x4C   4    0 for v1; unknown bits ⇒ reject
     uint8_t  uuid[16];           // 0x50  16    content-derived, see §3.1
@@ -52,7 +52,7 @@ struct NxpSuperblock {           // offset  size
 
 Validation rules:
 
-1. `magic` is `NXP\x01` (byte 3 is the major version this file obeys).
+1. `magic` is `NUP\x01` (byte 3 is the major version this file obeys).
 2. `header_size >= 0x80`; fields beyond v1's 0x80 (if `header_version > 1`) are ignored.
 3. `toc_offset == header_size`, `toc_size` and `blob_offset` are 16-byte-aligned sizes/offsets,
    `blob_offset >= toc_offset + toc_size`, `file_size ==` actual stream length.
@@ -74,7 +74,7 @@ Contiguous region starting at `toc_offset`.
 Offsets **relative to the TOC start**.
 
 ```c
-struct NxpToc {
+struct NupToc {
     uint32_t magic;              // 0x00  'T','O','C', 1
     uint32_t package_count;      // 0x04  (redundant with superblock, cross-checked)
     uint64_t dir_count;          // 0x08
@@ -82,18 +82,18 @@ struct NxpToc {
     uint64_t string_pool_off;    // 0x18  relative to TOC start
     uint64_t string_pool_size;   // 0x20
     uint64_t reserved;           // 0x28  zero
-    NxpPackage packages[package_count];   // 0x30, each 0x40 bytes
-    NxpDir     dirs[dir_count];           // each 0x18 bytes
-    NxpFile    files[file_count];         // each 0x50 bytes
+    NupPackage packages[package_count];   // 0x30, each 0x40 bytes
+    NupDir     dirs[dir_count];           // each 0x18 bytes
+    NupFile    files[file_count];         // each 0x50 bytes
     uint32_t   children[child_slot_count];// 4 bytes each, see §4.3
     uint8_t    string_pool[];             // at string_pool_off
 };
 ```
 
-### 3.1 Package record - `NxpPackage` (0x40 bytes)
+### 3.1 Package record - `NupPackage` (0x40 bytes)
 
 ```c
-struct NxpPackage {              // offset  size
+struct NupPackage {              // offset  size
     uint64_t title_id;           // 0x00   8   raw 64-bit application/add-on ID, verbatim from dump
     uint32_t root_dir;           // 0x08   4   index into dirs[]; package tree root
     uint32_t exefs_dir;          // 0x0C   4   index into dirs[], or 0xFFFFFFFF
@@ -155,10 +155,10 @@ anything else matching the reserved-artifact list (§7.3) unless otherwise.
 Cross-package dedup (§4.4) makes the shared files cheap.
 Delta packaging is a possible v2 extension via flags.
 
-### 3.2 Directory record - `NxpDir` (0x18 bytes)
+### 3.2 Directory record - `NupDir` (0x18 bytes)
 
 ```c
-struct NxpDir {                  // offset  size
+struct NupDir {                  // offset  size
     uint32_t name_off;           // 0x00   4   byte offset into string pool
     uint32_t name_len;           // 0x04   4   bytes (not counting terminator)
     uint32_t first_child;        // 0x08   4   index into children[]
@@ -183,10 +183,10 @@ unique within a directory (case-sensitive).
 
 `child_slot_count` is the sum of all `child_count` values (not stored; can be derived if needed).
 
-### 3.4 File record - `NxpFile` (0x50 bytes)
+### 3.4 File record - `NupFile` (0x50 bytes)
 
 ```c
-struct NxpFile {                 // offset  size
+struct NupFile {                 // offset  size
     uint32_t name_off;           // 0x00   4   byte offset into string pool
     uint32_t name_len;           // 0x04   4
     uint8_t  reserved[4];        // 0x08   4   zero
@@ -323,7 +323,7 @@ TLV wins for metadata.
 ### 6.3 Reserved artifact names
 
 Producers exclude by default: `.listing` (dump-tool FTP listings). The name is reserved in
-NXP trees; producers MAY support opt-in retention with `flags` bit 1 in the package record
+NUP trees; producers MAY support opt-in retention with `flags` bit 1 in the package record
 (defined in a future revision before use).
 
 ### 6.4 Extension registry
@@ -340,7 +340,7 @@ NXP trees; producers MAY support opt-in retention with `flags` bit 1 in the pack
 A 1-file base package, raw codec, 2-level tree:
 
 ```
-Superblock:   magic NXP\x01, header_size 0x80, toc_offset 0x80
+Superblock:   magic NUP\x01, header_size 0x80, toc_offset 0x80
 TOC:          1 package, 2 dirs (root, romfs), 1 file (romfs/hello.bin)
               children[] = [ romfs ]          (root's child)
               files[0] = "hello.bin", size 5, sha256 = ..., extent raw 5 bytes
@@ -357,8 +357,8 @@ Package record: `title_id = 0x040074A01BF12000` (DK Bananza-style Switch 2 ID),
 
 | constant | value |
 |----------|-------|
-| extension | `.nxp` |
-| magic | `4E 58 50 01` (`NXP` + major 1) |
+| extension | `.nup` |
+| magic | `4E 55 50 01` (`NUP` + major 1) |
 | superblock size | `0x80` |
 | package record size | `0x40` |
 | dir record size | `0x18` |
@@ -373,35 +373,35 @@ Package record: `title_id = 0x040074A01BF12000` (DK Bananza-style Switch 2 ID),
 
 ## Appendix A - Emulator integration notes (informational)
 
-How an NXP container maps onto the two loader families, as of Nov 2026. None of this is
+How an NUP container maps onto the two loader families, as of Nov 2026. None of this is
 normative for the format.
 
 ### Ryujinx / Ryubing (C#, LibHac-based)
 
 - Existing keyless entry point: `Switch.LoadCart(exeFsDir, romFsPath)` →
   `ProcessLoader.LoadUnpackedNca` - loose ExeFS dir + RomFS stream, zeroed NACP is
-  acceptable to launch. NXP support = produce an `IFileSystem` (ExeFS view over the
+  acceptable to launch. NUP support = produce an `IFileSystem` (ExeFS view over the
   package's `exefs_dir` subtree) and an `IStorage`/stream factory (romfs files), or a
-  `LoadNxp(path)` that fans out per package.
+  `LoadNup(path)` that fans out per package.
 - Game-list metadata: `ApplicationLibrary.TryGetApplicationsFromFile` needs
   `ApplicationData { Id, Name, Developer, Version, Icon }` - served by meta TLVs
   0x0005 (title name), 0x0006 (publisher), 0x0004 (display version), 0x0003 (icon);
   `title_id` from the package record. When a TLV is absent, consumers fall back to the
   title ID (same as the extracted path today).
 - Switch 2 NPDMs (ACID signature area 0x300 instead of 0x200) need a parser fix in
-  `Ryujinx.HLE/Loaders/Npdm/` - NXP carries NPDMs verbatim, so this fix benefits NXP and
+  `Ryujinx.HLE/Loaders/Npdm/` - NUP carries NPDMs verbatim, so this fix benefits NUP and
   extracted dumps identically.
 
 ### Eden / yuzu forks (C++)
 
 - Existing keyless loader: `AppLoader_DeconstructedRomDirectory` (plus the `eden-nx2`
   branch's loose-RomFS handling, which builds an on-the-fly RomFS from a directory).
-- NXP support = an `AppLoader_Nxp` producing `VirtualFile`/`VirtualDir` views over the
+- NUP support = an `AppLoader_Nup` producing `VirtualFile`/`VirtualDir` views over the
   package subtrees, or a `ContentProvider` implementation feeding the existing
   `RegisteredCache`/`PatchManager` layering (updates overlay via `patch_manager`,
   DLC via AoC registration).
 - Switch 2 NACP (`ApparentPlatform`/`ApplicationControlDataCondition`) already parses in
-  Eden; S2 "upgrade packs" ride the AddOnContent channel, matching NXP `addon` packages.
+  Eden; S2 "upgrade packs" ride the AddOnContent channel, matching NUP `addon` packages.
 
 ### Cross-cutting
 
@@ -410,18 +410,18 @@ normative for the format.
 - Multi-program titles: `title_id & ~0xF` grouping applies as on-console; package records
   need no special support (multiple `base` packages are disallowed in v1 - revisit if
   multi-program dumps appear; §4.1.2).
-- No key handling anywhere: NXP content is plaintext; consumers skip ticket/key paths.
+- No key handling anywhere: NUP content is plaintext; consumers skip ticket/key paths.
 
 ---
 
 ## Appendix B - NACP language table (informational, Switch-specific)
 
 The console's ApplicationControlProperty stores 16 per-language title entries plus a
-default. Consumers synthesizing an NACP from NXP meta TLVs can use this mapping from
+default. Consumers synthesizing an NACP from NUP meta TLVs can use this mapping from
 BCP-47 tags to NACP title indices (the NACP entry at index 0x10/`Default` holds the
 fallback name; TLV 0x0005/0x0003 map there):
 
-| BCP-47 tag (NXP) | NACP index | NACP entry |
+| BCP-47 tag (NUP) | NACP index | NACP entry |
 |------------------|-----------|-------------|
 | `en-us` | 0 | AmericanEnglish |
 | `en-gb` | 1 | BritishEnglish |

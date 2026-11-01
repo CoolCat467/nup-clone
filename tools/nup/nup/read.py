@@ -1,4 +1,4 @@
-"""NXP reader: validated parsing, virtual-tree access, extraction.
+"""NUP reader: validated parsing, virtual-tree access, extraction.
 
 Reader conformance (SPEC §7.1): validate superblock, verify TOC SHA-256
 before trusting TOC-derived values, bounds-check every offset/size, treat
@@ -46,7 +46,7 @@ class NodeRef:
     name: bytes
 
 
-class NxpReader:
+class NupReader:
     def __init__(self, path: str) -> None:
         self.path = path
         self._fh = open(path, "rb")
@@ -57,26 +57,26 @@ class NxpReader:
         self.super = F.parse_super(self._mm[:F.HEADER_SIZE])
         real_size = os.fstat(self._fh.fileno()).st_size
         if self.super["file_size"] != real_size:
-            raise F.NxpError(
+            raise F.NupError(
                 f"file_size {self.super['file_size']} != actual {real_size}")
         if self.super["toc_offset"] < F.HEADER_SIZE:
-            raise F.NxpError("toc_offset before header end")
+            raise F.NupError("toc_offset before header end")
         if self.super["blob_offset"] < self.super["toc_offset"] + self.super["toc_size"]:
-            raise F.NxpError("blob region overlaps TOC")
+            raise F.NupError("blob region overlaps TOC")
         if self.super["toc_size"] % 1 or self.super["blob_offset"] % F.EXTENT_ALIGN:
-            raise F.NxpError("misaligned toc/blob offsets")
+            raise F.NupError("misaligned toc/blob offsets")
 
         toc_start = self.super["toc_offset"]
         raw_toc = self._mm[toc_start:toc_start + self.super["toc_size"]]
         if hashlib.sha256(raw_toc).digest() != self.super["toc_sha256"]:
-            raise F.NxpError("TOC SHA-256 mismatch - file corrupt or tampered")
+            raise F.NupError("TOC SHA-256 mismatch - file corrupt or tampered")
         self._parse_toc(raw_toc)
         self._check_bounds()
 
     def close(self) -> None:
         self._fh.close()
 
-    def __enter__(self) -> "NxpReader":
+    def __enter__(self) -> "NupReader":
         return self
 
     def __exit__(self, *exc) -> None:
@@ -88,15 +88,15 @@ class NxpReader:
         magic, pkg_count, dir_count, file_count, pool_off, pool_size, _r = \
             F._toc_head_s.unpack_from(toc, 0)
         if magic != F.TOC_MAGIC:
-            raise F.NxpError(f"bad TOC magic {magic!r}")
+            raise F.NupError(f"bad TOC magic {magic!r}")
         if pkg_count != self.super["package_count"]:
-            raise F.NxpError("package_count mismatch between superblock and TOC")
+            raise F.NupError("package_count mismatch between superblock and TOC")
         need = (F._toc_head_s.size + pkg_count * F.PKG_SIZE
                 + dir_count * F.DIR_SIZE + file_count * F.FILE_SIZE)
         if len(toc) < need:
-            raise F.NxpError("TOC truncated")
+            raise F.NupError("TOC truncated")
         if pool_off + pool_size > len(toc) or pool_off < need:
-            raise F.NxpError("string pool out of TOC bounds")
+            raise F.NupError("string pool out of TOC bounds")
 
         self.dir_count = dir_count
         self.file_count = file_count
@@ -125,23 +125,23 @@ class NxpReader:
                 F._file_s.unpack_from(toc, pos)
             pos += F.FILE_SIZE
             if codec not in (F.CODEC_RAW, F.CODEC_ZSTD):
-                raise F.NxpError(f"unknown extent codec {codec}")
+                raise F.NupError(f"unknown extent codec {codec}")
             if cflags != 0:
-                raise F.NxpError(f"unknown codec_flags {cflags}")
+                raise F.NupError(f"unknown codec_flags {cflags}")
             if size == 0 and (eoff != 0 or esz != 0 or codec != F.CODEC_RAW):
-                raise F.NxpError("zero-size file with nonempty extent")
+                raise F.NupError("zero-size file with nonempty extent")
             if size != 0 and esz == 0:
-                raise F.NxpError(f"file with nonzero size but empty extent")
+                raise F.NupError(f"file with nonzero size but empty extent")
             self.files.append((self._pool_str(off, ln), size, sha, eoff, esz, codec))
 
         slot_end = pool_off
         if (slot_end - pos) % 4:
-            raise F.NxpError("children array not 4-byte aligned")
+            raise F.NupError("children array not 4-byte aligned")
         self.children = list(struct.unpack_from(f"<{(slot_end - pos) // 4}I", toc, pos))
 
     def _pool_str(self, off: int, ln: int) -> bytes:
         if off + ln > len(self.pool):
-            raise F.NxpError("string reference out of pool bounds")
+            raise F.NupError("string reference out of pool bounds")
         return self.pool[off:off + ln]
 
     def _check_bounds(self) -> None:
@@ -151,34 +151,34 @@ class NxpReader:
             if size == 0:
                 continue
             if eoff < blob_start or eoff + esz > file_size:
-                raise F.NxpError(f"extent out of bounds for file {name!r}")
+                raise F.NupError(f"extent out of bounds for file {name!r}")
             if eoff % F.EXTENT_ALIGN:
-                raise F.NxpError(f"extent not {F.EXTENT_ALIGN}-aligned for {name!r}")
+                raise F.NupError(f"extent not {F.EXTENT_ALIGN}-aligned for {name!r}")
         slot_total = len(self.children)
         used = 0
         for name, first, count in self.dirs:
             if first + count > slot_total:
-                raise F.NxpError(f"child range out of bounds for dir {name!r}")
+                raise F.NupError(f"child range out of bounds for dir {name!r}")
             used += count
         if used != slot_total:
-            raise F.NxpError(f"child slots used {used} != total {slot_total}")
+            raise F.NupError(f"child slots used {used} != total {slot_total}")
         for p in self.packages:
             if p.root_dir >= self.dir_count:
-                raise F.NxpError(f"package {p.index}: root_dir out of bounds")
+                raise F.NupError(f"package {p.index}: root_dir out of bounds")
             for d in (p.exefs_dir, p.romfs_dir):
                 if d != F.NO_DIR and d >= self.dir_count:
-                    raise F.NxpError(f"package {p.index}: exefs/romfs dir out of bounds")
+                    raise F.NupError(f"package {p.index}: exefs/romfs dir out of bounds")
             if p.meta_size and (p.meta_offset + p.meta_size > file_size):
-                raise F.NxpError(f"package {p.index}: meta block out of bounds")
+                raise F.NupError(f"package {p.index}: meta block out of bounds")
             if p.flags & ~F.PKG_FLAG_STANDALONE_UPDATE:
-                raise F.NxpError(f"package {p.index}: unknown package flags {p.flags:#x}")
+                raise F.NupError(f"package {p.index}: unknown package flags {p.flags:#x}")
         # SPEC §4.1.2: update packages need a base in the same container, or
         # the standalone_update flag (record flags, offset 0x19, bit 0).
         has_base = any(p.kind == F.KIND_BASE for p in self.packages)
         for p in self.packages:
             if (p.kind == F.KIND_UPDATE and not has_base
                     and not (p.flags & F.PKG_FLAG_STANDALONE_UPDATE)):
-                raise F.NxpError(
+                raise F.NupError(
                     f"package {p.index}: update without base in container and "
                     f"standalone_update flag not set")
 
@@ -224,18 +224,18 @@ class NxpReader:
         elif codec == F.CODEC_RAW:
             data = self._mm[eoff:eoff + esz]
             if len(data) != esz:
-                raise F.NxpError(f"short read for {name!r}")
+                raise F.NupError(f"short read for {name!r}")
         elif codec == F.CODEC_ZSTD:
             import zstandard
             comp = self._mm[eoff:eoff + esz]
             if len(comp) != esz:
-                raise F.NxpError(f"short read for {name!r}")
+                raise F.NupError(f"short read for {name!r}")
             dctx = zstandard.ZstdDecompressor()
             data = dctx.decompress(comp, max_output_size=size)
         else:
-            raise F.NxpError(f"unknown codec {codec}")
+            raise F.NupError(f"unknown codec {codec}")
         if len(data) != size:
-            raise F.NxpError(f"size mismatch for {name!r}: {len(data)} != {size}")
+            raise F.NupError(f"size mismatch for {name!r}: {len(data)} != {size}")
         return data
 
     def meta_records(self, pkg: PackageInfo) -> list[tuple[int, bytes]]:
@@ -245,7 +245,7 @@ class NxpReader:
         while pos + 8 <= len(block):
             t, _r, size = F._tlv_s.unpack_from(block, pos)
             if pos + 8 + size > len(block):
-                raise F.NxpError("meta TLV overruns block")
+                raise F.NupError("meta TLV overruns block")
             out.append((t, bytes(block[pos + 8:pos + 8 + size])))
             pos += 8 + size
         return out
@@ -264,7 +264,7 @@ class NxpReader:
                 (data_len,) = struct.unpack_from("<I", payload, pos)
                 pos += 4
                 if pos + data_len > len(payload):
-                    raise F.NxpError("localized record overruns TLV")
+                    raise F.NupError("localized record overruns TLV")
                 out[lang.lower()] = payload[pos:pos + data_len]
                 pos += data_len
         return out
