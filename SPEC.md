@@ -1,4 +1,4 @@
-# NXP — NX Package Format
+# NXP - NX Package Format
 
 **Version:** 1.0-draft · **Extension:** `.nxp` · **Magic:** `NXP\x01`
 
@@ -29,7 +29,7 @@ All strings are **UTF-8** (producers should emit NFC).
 
 ---
 
-## 3. Superblock
+## 2. Superblock
 
 Exactly 0x80 bytes at offset 0.
 
@@ -59,7 +59,7 @@ Validation rules:
 4. `SHA-256(TOC bytes)` equals `toc_sha256`.
 5. `package_count >= 1`.
 
-### 3.1 UUID
+### 2.1 UUID
 
 ```
 uuid[0..16] = SHA-256( concat over packages, in TOC order:
@@ -68,7 +68,7 @@ uuid[0..16] = SHA-256( concat over packages, in TOC order:
 
 ---
 
-## 4. Table of Contents
+## 3. Table of Contents
 
 Contiguous region starting at `toc_offset`. 
 Offsets **relative to the TOC start**.
@@ -90,7 +90,7 @@ struct NxpToc {
 };
 ```
 
-### 4.1 Package record — `NxpPackage` (0x40 bytes)
+### 3.1 Package record - `NxpPackage` (0x40 bytes)
 
 ```c
 struct NxpPackage {              // offset  size
@@ -109,7 +109,7 @@ struct NxpPackage {              // offset  size
 };                               // total  0x40
 ```
 
-#### 4.1.1 Version encoding
+#### 3.1.1 Version encoding
 
 `version` is stored as the u32 that dump tools export (NCM application
 version).
@@ -119,7 +119,7 @@ Producers additionally store a display version in the package meta block
 (TLV 0x0004), because a few titles are known to encode versions non-standardly. 
 Readers treat `version` as opaque.
 
-#### 4.1.2 Package kinds
+#### 3.1.2 Package kinds
 
 | kind | name | meaning |
 |------|------|---------|
@@ -133,34 +133,29 @@ Readers treat `version` as opaque.
 Rules: a container contains at most one `base` package however in the case that a dump
 does not contain a base package, they must be marked standalone via flags bit 0.
 (`standalone_update`, used for update-only dumps; consumers need a matching base elsewhere).
-The bit is package record `flags`, offset `0x19`, bit 0 (value `0x01`) — set it on **every**
+The bit is package record `flags`, offset `0x19`, bit 0 (value `0x01`) - set it on **every**
 `update` package in a base-less container, and leave it clear when the container has a base.
-`addon` packages carry their add-on `title_id` (e.g. Switch 1 `0100…801`, Switch 2 `0400…3001`).
+`addon` packages carry their add-on `title_id` (e.g. Switch 1 `0100...801`, Switch 2 `0400...3001`).
 
-#### 4.1.3 Canonical tree shape
-
-The package root is a directory whose top-level children follow the dump convention so that
-generic tools can navigate without interpreting the record:
+#### 3.1.3 Canonical tree shape
 
 ```
-<root>/exefs/…        ← ExeFS payload (main, main.npdm, rtld, sdk, subsdk*, code.bin, …)
-<root>/romfs/…        ← full RomFS tree, arbitrary depth
-<root>/data/…         ← anything else the dump provided (optional)
+<root>/exefs/...        ← ExeFS payload (main, main.npdm, rtld, sdk, subsdk*, code.bin, ...)
+<root>/romfs/...        ← full RomFS tree, arbitrary depth
+<root>/data/...         ← anything else the dump provided (optional)
 ```
 
-`exefs_dir`/`romfs_dir` point at these directories when present. The canonical shape is a
-convention, not a parser requirement: readers MUST resolve content through the record fields,
-not by path guessing. Producers MUST exclude dump-tool artifacts — `.listing` files and
-anything else matching the reserved-artifact list (§7.3) — unless explicitly asked not to.
+`exefs_dir`/`romfs_dir` point at these directories when present.
+Readers MUST resolve content through the record fields.
+Producers MUST exclude dump-tool artifacts - `.listing` files and
+anything else matching the reserved-artifact list (§7.3) unless otherwise.
 
-#### 4.1.4 Update semantics
+#### 3.1.4 Update semantics
 
-An `update` package's tree is the **complete** tree of the patched content (as dumps provide),
-not a delta. Consumers apply it by overlaying the update tree onto the base tree (paths in the
-update shadow base paths). Cross-package dedup (§4.4) makes the shared files cheap. Delta
-packaging is a possible v2 extension via flags.
+Cross-package dedup (§4.4) makes the shared files cheap.
+Delta packaging is a possible v2 extension via flags.
 
-### 4.2 Directory record — `NxpDir` (0x18 bytes)
+### 3.2 Directory record - `NxpDir` (0x18 bytes)
 
 ```c
 struct NxpDir {                  // offset  size
@@ -172,22 +167,23 @@ struct NxpDir {                  // offset  size
 };
 ```
 
-### 4.3 Children array and node IDs
+### 3.3 Children array and node IDs
 
 `children[]` is a flat `uint32` array; each slot holds a **node id**:
 
 - node id `< dir_count`  → index into `dirs[]`
 - node id `>= dir_count` → index into `files[]` (subtract `dir_count`)
 
-A directory's children occupy the contiguous slot range
-`[first_child, first_child + child_count)`. Producers MUST lay out slots so that every
-directory's range is contiguous, MUST sort children by name using **bytewise UTF-8
-lexicographic order** (determinism + binary search on mount), and MUST keep child names
+A directory's children occupy the slot range
+`[first_child, first_child + child_count)`.
+Producers lay out slots so that every directory's range is contiguous, 
+sort children by name using **bytewise UTF-8 lexicographic order** 
+(determinism + binary search on mount) and keep child names
 unique within a directory (case-sensitive).
 
-`child_slot_count` is the sum of all `child_count` values (not stored; derivable).
+`child_slot_count` is the sum of all `child_count` values (not stored; can be derived if needed).
 
-### 4.4 File record — `NxpFile` (0x50 bytes)
+### 3.4 File record - `NxpFile` (0x50 bytes)
 
 ```c
 struct NxpFile {                 // offset  size
@@ -205,46 +201,51 @@ struct NxpFile {                 // offset  size
 };                               // total  0x50
 ```
 
-### 4.5 String pool
+### 3.5 String pool
 
-A byte array of UTF-8 strings; entries need not be null-terminated (`name_len` bounds them).
-Producers SHOULD intern (dedup) strings and SHOULD place the pool after the children array.
+A byte array of UTF-8 strings; entries do not need to be null-terminated (`name_len` bounds them).
+Producers should intern (dedup) strings and should place the pool after the children array.
 Strings are referenced by (offset, length) pairs from node records.
 
-### 4.6 Dedup
+### 3.6 Dedup
 
-Two file nodes with equal `sha256` SHOULD share one extent. Producers MUST NOT share an
-extent between files with different `sha256`, sizes, or codecs. Readers MUST NOT assume
-dedup — two files may also have separate, identical extents. Zero-length files have
-`extent_size == 0`, `codec == 0`, `extent_offset == 0` (no blob bytes).
+Two file nodes with equal `sha256` should share one extent.
+Producers must not share an extent between files with different 
+`sha256`, sizes, or codecs.
+Readers must not assume dedup - two files may also have separate, 
+identical extents.
+Zero-length files have `extent_size == 0`, `codec == 0`, 
+`extent_offset == 0` (no blob bytes).
 
 ---
 
-## 5. Blob region
+## 4. Blob region
 
-Starts at `blob_offset`, runs to end of file. It is a concatenation of **extents**; every
-extent begins at a **16-byte-aligned** absolute offset. An extent's bytes are exactly
-`extent_size` long; alignment gaps are zero padding (not part of any extent).
+Starts at `blob_offset`, runs to end of file.
+It is a concatenation of **extents**; every
+extent begins at a **16-byte-aligned** absolute offset.
+An extent's bytes are exactly `extent_size` long; 
+alignment gaps are zero padding (not part of any extent).
 
-### 5.1 Codecs
+### 4.1 Codecs
 
 | codec | name | framing |
 |-------|------|---------|
 | 0 | `raw`   | `extent_size == size` bytes, uncompressed |
-| 1 | `zstd`  | one standard Zstandard frame containing the whole file; frame MUST embed the content size in its header (producers compress with known size) |
+| 1 | `zstd`  | one standard Zstandard frame containing the whole file; frame must embed the content size in its header (producers compress with known size) |
 | 2 | `lz4`   | reserved for v2 (frame: LZ4 skippable-frame container, TBD) |
 | 3 | `zstd-chunked` | reserved for v2 (chunk index in meta TLV, TBD) |
 
-Readers MUST reject unknown codecs. A reader MAY implement only codec 0 and still be
-conformant for raw-only files; a general-purpose reader SHOULD implement codecs 0–1.
+Readers must reject unknown codecs. A reader may implement only codec 0 and still be
+conformant for raw-only files; a general-purpose reader should implement codecs 0–1.
 
-Compression policy (producer): compress each file with zstd level 3 (MAY use higher levels);
-use `raw` when the compressed result is `>= size` or compression fails. Per-file choice only —
+Compression policy (producer): compress each file with zstd level 3 (may use higher levels);
+use `raw` when the compressed result is `>= size` or compression fails. Per-file choice only -
 there is no global toggle in the format.
 
 ---
 
-## 6. Package meta block
+## 5. Package meta block
 
 Optional per-package TLV list at `meta_offset` (absolute), `meta_size` bytes:
 
@@ -253,12 +254,12 @@ struct TlvRecord {               // offset  size
     uint16_t type;               // 0x00   2
     uint16_t reserved;           // 0x02   2   zero
     uint32_t size;               // 0x04   4   payload size in bytes
-    uint8_t  payload[size];      // 0x08   …   no padding between records
+    uint8_t  payload[size];      // 0x08   ...   no padding between records
 };
 ```
 
-The block ends when the next record header would exceed `meta_size`. Readers MUST skip
-unknown types. Registered types:
+The block ends when the next record header would exceed `meta_size`.
+Readers must skip unknown types. Registered types:
 
 | type | payload | notes |
 |------|---------|-------|
@@ -275,18 +276,16 @@ unknown types. Registered types:
 | 0x0100–0x7FFF | reserved for future spec versions | readers skip |
 | 0x8000–0xFFFF | vendor/tool private | readers skip |
 
-### 6.1 Localized records (types 0x0009 / 0x000A)
-
-On-console titles can present a different name and icon per console language (a Japanese
-title shows `ゼルダの伝説` on a `ja` console, `The Legend of Zelda` on `en-US`). These types
-carry that data as a sequence of records filling the payload up to `size`:
+### 5.1 Localized records (types 0x0009 / 0x000A)
+Japanese title shows `ゼルダの伝説` on a `ja` console, `The Legend of Zelda` on `en-US`.
+These types carry that data as a sequence of records filling the payload up to `size`:
 
 ```c
 struct LocalizedRecord {
     uint8_t  lang_len;           // 0x00   1   language tag length in bytes
-    uint8_t  lang[lang_len];     // 0x01   …   BCP-47 tag, lowercase ("ja", "en-us", "zh-hans")
+    uint8_t  lang[lang_len];     // 0x01   ...   BCP-47 tag, lowercase ("ja", "en-us", "zh-hans")
     uint32_t data_len;           //        4   payload size in bytes
-    uint8_t  data[data_len];     //        …   UTF-8 name (0x0009) or image bytes (0x000A)
+    uint8_t  data[data_len];     //        ...   UTF-8 name (0x0009) or image bytes (0x000A)
 };
 ```
 
@@ -297,24 +296,15 @@ normal language-matching fallbacks, else use 0x0005/0x0003. Application-level me
 (names, icons, display version) belongs in the `base` package's meta block; containers
 without a base attach it to the first package.
 
-**Is UTF-8 enough for every language?** Yes. UTF-8 encodes the entire Unicode range —
-Japanese, Chinese (simplified and traditional), Korean, Cyrillic, Arabic, emoji, all of it —
-and every string field in NXP is UTF-8 with byte lengths (`name_len`, `data_len`), never
-null-terminated, so multi-byte characters are safe. Producers SHOULD emit NFC-normalized
-text but MUST NOT transform what they are given; readers MUST NOT re-normalize (byte-exact
-strings). Consumers that need console-shaped metadata transcode at their boundary (the
-console's NACP uses UTF-16 internally); Appendix B maps BCP-47 tags onto the NACP language
-table for that purpose.
-
-Producers MUST write the NPDM TLV when the ExeFS contains `main.npdm` (it is the authoritative
+Producers must write the NPDM TLV when the ExeFS contains `main.npdm` (it is the authoritative
 source of the program ID). If a TLV and the tree disagree, the tree wins for content and the
 TLV wins for metadata.
 
 ---
 
-## 7. Conformance & registries
+## 6. Conformance & registries
 
-### 7.1 Reader conformance (MUST)
+### 6.1 Reader conformance (must)
 
 1. Validate superblock per §3; verify TOC SHA-256 before trusting any TOC-derived value.
 2. Bounds-check every offset/size against `file_size`; reject overlaps between regions.
@@ -323,20 +313,20 @@ TLV wins for metadata.
 5. Never execute or trust file names as paths (they are labels; overlay logic is the
    consumer's responsibility).
 
-### 7.2 Producer conformance (MUST)
+### 6.2 Producer conformance (must)
 
 1. All record fields documented "zero" are zero; all extents 16-aligned; children sorted.
 2. Per-file SHA-256 computed over the exact uncompressed bytes.
 3. Superblock/TOC/blob layout per §2–§5; TOC hash correct.
 4. `.listing` and other dump artifacts excluded per §4.1.3 unless the operator overrides.
 
-### 7.3 Reserved artifact names
+### 6.3 Reserved artifact names
 
 Producers exclude by default: `.listing` (dump-tool FTP listings). The name is reserved in
 NXP trees; producers MAY support opt-in retention with `flags` bit 1 in the package record
 (defined in a future revision before use).
 
-### 7.4 Extension registry
+### 6.4 Extension registry
 
 - New codecs: allocate next free `codec` id, specify framing here, bump nothing else.
 - New package kinds / meta types: document in this section.
@@ -345,7 +335,7 @@ NXP trees; producers MAY support opt-in retention with `flags` bit 1 in the pack
 
 ---
 
-## 8. Worked example (minimal)
+## 7. Worked example (minimal)
 
 A 1-file base package, raw codec, 2-level tree:
 
@@ -353,8 +343,8 @@ A 1-file base package, raw codec, 2-level tree:
 Superblock:   magic NXP\x01, header_size 0x80, toc_offset 0x80
 TOC:          1 package, 2 dirs (root, romfs), 1 file (romfs/hello.bin)
               children[] = [ romfs ]          (root's child)
-              files[0] = "hello.bin", size 5, sha256 = …, extent raw 5 bytes
-Blob:         5 bytes at 0x… (aligned up to 16)
+              files[0] = "hello.bin", size 5, sha256 = ..., extent raw 5 bytes
+Blob:         5 bytes at 0x... (aligned up to 16)
 ```
 
 Package record: `title_id = 0x040074A01BF12000` (DK Bananza-style Switch 2 ID),
@@ -363,7 +353,7 @@ Package record: `title_id = 0x040074A01BF12000` (DK Bananza-style Switch 2 ID),
 
 ---
 
-## 9. Reference constants
+## 8. Reference constants
 
 | constant | value |
 |----------|-------|
@@ -381,25 +371,25 @@ Package record: `title_id = 0x040074A01BF12000` (DK Bananza-style Switch 2 ID),
 
 ---
 
-## Appendix A — Emulator integration notes (informational)
+## Appendix A - Emulator integration notes (informational)
 
 How an NXP container maps onto the two loader families, as of Nov 2026. None of this is
-normative for the format; it exists so implementers know the target interfaces.
+normative for the format.
 
 ### Ryujinx / Ryubing (C#, LibHac-based)
 
 - Existing keyless entry point: `Switch.LoadCart(exeFsDir, romFsPath)` →
-  `ProcessLoader.LoadUnpackedNca` — loose ExeFS dir + RomFS stream, zeroed NACP is
+  `ProcessLoader.LoadUnpackedNca` - loose ExeFS dir + RomFS stream, zeroed NACP is
   acceptable to launch. NXP support = produce an `IFileSystem` (ExeFS view over the
   package's `exefs_dir` subtree) and an `IStorage`/stream factory (romfs files), or a
   `LoadNxp(path)` that fans out per package.
 - Game-list metadata: `ApplicationLibrary.TryGetApplicationsFromFile` needs
-  `ApplicationData { Id, Name, Developer, Version, Icon }` — served by meta TLVs
+  `ApplicationData { Id, Name, Developer, Version, Icon }` - served by meta TLVs
   0x0005 (title name), 0x0006 (publisher), 0x0004 (display version), 0x0003 (icon);
   `title_id` from the package record. When a TLV is absent, consumers fall back to the
   title ID (same as the extracted path today).
 - Switch 2 NPDMs (ACID signature area 0x300 instead of 0x200) need a parser fix in
-  `Ryujinx.HLE/Loaders/Npdm/` — NXP carries NPDMs verbatim, so this fix benefits NXP and
+  `Ryujinx.HLE/Loaders/Npdm/` - NXP carries NPDMs verbatim, so this fix benefits NXP and
   extracted dumps identically.
 
 ### Eden / yuzu forks (C++)
@@ -416,15 +406,15 @@ normative for the format; it exists so implementers know the target interfaces.
 ### Cross-cutting
 
 - Update layering: consumer overlays the `update` package tree onto `base` (path shadowing),
-  then DLC — mirroring how patch NCAs overlay base NCAs today.
+  then DLC - mirroring how patch NCAs overlay base NCAs today.
 - Multi-program titles: `title_id & ~0xF` grouping applies as on-console; package records
-  need no special support (multiple `base` packages are disallowed in v1 — revisit if
+  need no special support (multiple `base` packages are disallowed in v1 - revisit if
   multi-program dumps appear; §4.1.2).
 - No key handling anywhere: NXP content is plaintext; consumers skip ticket/key paths.
 
 ---
 
-## Appendix B — NACP language table (informational, Switch-specific)
+## Appendix B - NACP language table (informational, Switch-specific)
 
 The console's ApplicationControlProperty stores 16 per-language title entries plus a
 default. Consumers synthesizing an NACP from NXP meta TLVs can use this mapping from

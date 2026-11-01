@@ -145,7 +145,7 @@ def discover(src: str, base_title_id: int | None) -> list[PackInput]:
                     if os.path.isdir(cdir) and _looks_like_content(cdir):
                         packages.append(PackInput(F.KIND_ADDON, cdir, title_id=int(name, 16)))
     elif has_updates:
-        # Update-only dump (e.g. an update exported without its base game):
+        # Update-only dump:
         # every update package carries standalone_update (SPEC §4.1.2, flags
         # bit 0 at offset 0x19). DLC may still ride along in dlc/.
         packages.extend(_collect_updates(upd_dir, base_title_id or 0,

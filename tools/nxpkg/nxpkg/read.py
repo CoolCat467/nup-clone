@@ -69,7 +69,7 @@ class NxpReader:
         toc_start = self.super["toc_offset"]
         raw_toc = self._mm[toc_start:toc_start + self.super["toc_size"]]
         if hashlib.sha256(raw_toc).digest() != self.super["toc_sha256"]:
-            raise F.NxpError("TOC SHA-256 mismatch — file corrupt or tampered")
+            raise F.NxpError("TOC SHA-256 mismatch - file corrupt or tampered")
         self._parse_toc(raw_toc)
         self._check_bounds()
 

@@ -1,4 +1,4 @@
-"""nxpkg — reference CLI for the NXP (NX Package) format."""
+"""nxpkg - reference CLI for the NXP (NX Package) format."""
 
 from __future__ import annotations
 
@@ -149,9 +149,9 @@ def _kind_arg(name: str) -> int | None:
 def _cmd_verify(args: argparse.Namespace) -> int:
     ok, problems = verify(args.file, deep=not args.fast)
     if ok:
-        print(f"verify: OK ({'deep' if not args.fast else 'fast'}) — {args.file}")
+        print(f"verify: OK ({'deep' if not args.fast else 'fast'}) - {args.file}")
         return 0
-    print(f"verify: FAILED — {args.file}")
+    print(f"verify: FAILED - {args.file}")
     for p in problems[:args.max_problems]:
         print(f"  - {p}")
     if len(problems) > args.max_problems:
