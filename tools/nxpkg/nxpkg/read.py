@@ -239,6 +239,37 @@ class NxpReader:
             pos += 8 + size
         return out
 
+    def _localized(self, pkg: PackageInfo, tlv_type: int) -> dict[bytes, bytes]:
+        out: dict[bytes, bytes] = {}
+        for t, payload in self.meta_records(pkg):
+            if t != tlv_type:
+                continue
+            pos = 0
+            while pos < len(payload):
+                lang_len = payload[pos]
+                pos += 1
+                lang = payload[pos:pos + lang_len]
+                pos += lang_len
+                (data_len,) = struct.unpack_from("<I", payload, pos)
+                pos += 4
+                if pos + data_len > len(payload):
+                    raise F.NxpError("localized record overruns TLV")
+                out[lang.lower()] = payload[pos:pos + data_len]
+                pos += data_len
+        return out
+
+    def localized_titles(self, pkg: PackageInfo) -> dict[bytes, bytes]:
+        """BCP-47 tag (lowercase bytes) -> UTF-8 title name. SPEC §6.1, TLV 0x0009."""
+        return self._localized(pkg, F.TLV_LOCALIZED_TITLES)
+
+    def localized_icons(self, pkg: PackageInfo) -> dict[bytes, bytes]:
+        """BCP-47 tag (lowercase bytes) -> image bytes. SPEC §6.1, TLV 0x000A."""
+        return self._localized(pkg, F.TLV_LOCALIZED_ICONS)
+
+    def app_meta(self, pkg: PackageInfo) -> dict[int, bytes]:
+        """TLV type -> payload, preferring the base (or first) package's block."""
+        return dict(self.meta_records(pkg))
+
     # ---- convenience ----
 
     def find_package(self, kind: int | None = None, title_id: int | None = None,

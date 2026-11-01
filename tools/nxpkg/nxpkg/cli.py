@@ -12,6 +12,20 @@ from .read import NxpReader
 from .verify import verify
 
 
+def _parse_kv_flags(default: str | None, lang_flags: list[str], what: str
+                    ) -> dict[str | None, str]:
+    """Merge --name/--icon (default language) with --lang-name/--lang-icon LANG=VALUE."""
+    out: dict[str | None, str] = {}
+    if default:
+        out[None] = default
+    for item in lang_flags or []:
+        lang, sep, value = item.partition("=")
+        if not sep or not value:
+            raise SystemExit(f"nxpkg: --lang-{what} expects LANG=VALUE, got {item!r}")
+        out[lang.lower()] = value
+    return out
+
+
 def _cmd_pack(args: argparse.Namespace) -> int:
     t0 = time.time()
     last = [0]
@@ -28,6 +42,8 @@ def _cmd_pack(args: argparse.Namespace) -> int:
                     keep_listings=args.keep_listings,
                     base_title_id=int(args.title_id, 16) if args.title_id else None,
                     display_version=args.display_version,
+                    names=_parse_kv_flags(args.name, args.lang_name, "name"),
+                    icons=_parse_kv_flags(args.icon, args.lang_icon, "icon"),
                     progress=None if args.quiet else progress)
     if not args.quiet:
         print()
@@ -65,14 +81,19 @@ def _cmd_info(args: argparse.Namespace) -> int:
         print(f"blobs:     @{s['blob_offset']:#x}")
         print(f"packages:  {len(r.packages)}  (dirs {r.dir_count}, files {r.file_count})")
         for p in r.packages:
-            name = ""
-            for t, payload in r.meta_records(p):
-                if t == F.TLV_TITLE_NAME:
-                    name = payload.decode("utf-8", "replace")
-                    break
+            meta = r.app_meta(p)
+            name = meta.get(F.TLV_TITLE_NAME, b"").decode("utf-8", "replace")
+            pub = meta.get(F.TLV_PUBLISHER, b"").decode("utf-8", "replace")
             label = f" {name!r}" if name else ""
+            if pub:
+                label += f" by {pub!r}"
             print(f"  [{p.index}] {p.kind_name:<6} {p.title_id:016X} "
                   f"v{p.version} ({p.version_str}){label}")
+            loc = r.localized_titles(p)
+            if loc:
+                langs = ", ".join(f"{l.decode()}={n.decode('utf-8', 'replace')!r}"
+                                  for l, n in sorted(loc.items()))
+                print(f"         localized: {langs}")
             if not args.tree:
                 continue
             if p.exefs_dir != F.NO_DIR:
@@ -146,6 +167,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--level", type=int, default=3, help="zstd level (default 3)")
     p.add_argument("--title-id", help="override base title ID (16 hex digits)")
     p.add_argument("--display-version", help="store a display version string in meta")
+    p.add_argument("--name", help="game title, default language (TLV 0x0005)")
+    p.add_argument("--lang-name", action="append", metavar="LANG=NAME",
+                   help="localized title, repeatable, BCP-47 tag (e.g. --lang-name ja=ゼルダ)")
+    p.add_argument("--icon", metavar="PATH", help="icon image, default language (TLV 0x0003)")
+    p.add_argument("--lang-icon", action="append", metavar="LANG=PATH",
+                   help="localized icon, repeatable (e.g. --lang-icon ja=icon_ja.dat)")
     p.add_argument("--keep-listings", action="store_true", help="keep .listing artifacts")
     p.add_argument("-q", "--quiet", action="store_true")
     p.set_defaults(fn=_cmd_pack)

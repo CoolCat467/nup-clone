@@ -206,22 +206,81 @@ class Tree:
             rec(root)
 
 
-def _meta_block(pkg: PackInput, display_version: str | None, dump_label: str) -> bytes:
+def _meta_block(pkg: PackInput, dump_label: str, app_extra: bytes = b"") -> bytes:
     recs: list[tuple[int, bytes]] = []
     if pkg.npdm:
         recs.append((F.TLV_NPDM, pkg.npdm))
-    if display_version:
-        recs.append((F.TLV_DISPLAY_VERSION, display_version.encode("utf-8")))
     recs.append((F.TLV_SOURCE_DUMP, dump_label.encode("utf-8")))
+    if app_extra:
+        # merge prebuilt application-level TLVs (names/icons/display version)
+        pos = 0
+        while pos + 8 <= len(app_extra):
+            t, _r, size = F._tlv_s.unpack_from(app_extra, pos)
+            recs.append((t, app_extra[pos + 8:pos + 8 + size]))
+            pos += 8 + size
+    recs.sort(key=lambda t: t[0])
+    deduped: list[tuple[int, bytes]] = []
+    for rec in recs:  # app_extra may repeat per-package types; keep first
+        if deduped and deduped[-1][0] == rec[0]:
+            continue
+        deduped.append(rec)
     out = bytearray()
-    for t, payload in recs:
+    for t, payload in deduped:
         out += F._tlv_s.pack(t, 0, len(payload))
         out += payload
     return bytes(out)
 
 
+def _read_file(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _app_meta(names: dict[str | None, str] | None, icons: dict[str | None, str] | None,
+              display_version: str | None, dump_label: str) -> bytes:
+    """Application-level meta TLVs (SPEC §6.1): names/icons localized, plus
+    display version and provenance. Attached to the base package (or first)."""
+    recs: list[tuple[int, bytes]] = []
+    names = names or {}
+    icons = icons or {}
+    if names.get(None):
+        recs.append((F.TLV_TITLE_NAME, names[None].encode("utf-8")))
+    if names.keys() - {None}:
+        body = bytearray()
+        for lang in sorted(k for k in names if k is not None):
+            tag = lang.lower().encode("ascii")
+            if not 0 < len(tag) <= 255:
+                raise SystemExit(f"pack: bad language tag {lang!r}")
+            body += bytes([len(tag)]) + tag
+            data = names[lang].encode("utf-8")
+            body += struct.pack("<I", len(data)) + data
+        recs.append((F.TLV_LOCALIZED_TITLES, bytes(body)))
+    if icons.get(None):
+        recs.append((F.TLV_ICON, _read_file(icons[None])))
+    if icons.keys() - {None}:
+        body = bytearray()
+        for lang in sorted(k for k in icons if k is not None):
+            tag = lang.lower().encode("ascii")
+            if not 0 < len(tag) <= 255:
+                raise SystemExit(f"pack: bad language tag {lang!r}")
+            body += bytes([len(tag)]) + tag
+            data = _read_file(icons[lang])
+            body += struct.pack("<I", len(data)) + data
+        recs.append((F.TLV_LOCALIZED_ICONS, bytes(body)))
+    if display_version:
+        recs.append((F.TLV_DISPLAY_VERSION, display_version.encode("utf-8")))
+    recs.append((F.TLV_SOURCE_DUMP, dump_label.encode("utf-8")))
+    recs.sort(key=lambda t: t[0])  # deterministic order
+    out = bytearray()
+    for t, payload in recs:
+        out += F._tlv_s.pack(t, 0, len(payload)) + payload
+    return bytes(out)
+
+
 def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False,
          base_title_id: int | None = None, display_version: str | None = None,
+         names: dict[str | None, str] | None = None,
+         icons: dict[str | None, str] | None = None,
          progress=None) -> list[PackInput]:
     if os.path.exists(out_path):
         raise SystemExit(f"pack: refusing to overwrite {out_path}")
@@ -312,8 +371,10 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
         # ---- meta blocks (after blob region) ----
         meta_offsets: list[tuple[int, int]] = []
         dump_label = os.path.basename(os.path.normpath(src))
-        for pkg in packages:
-            block = _meta_block(pkg, display_version, dump_label)
+        app_extra = _app_meta(names, icons, display_version, dump_label)
+        app_pkg_idx = next((i for i, p in enumerate(packages) if p.kind == F.KIND_BASE), 0)
+        for i, pkg in enumerate(packages):
+            block = _meta_block(pkg, dump_label, app_extra if i == app_pkg_idx else b"")
             mo = blob_cursor  # == out.tell(); extents were appended sequentially
             out.write(block)
             blob_cursor += len(block)

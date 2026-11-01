@@ -1,40 +1,18 @@
 # NXP — NX Package Format
 
-**Version:** 1.0-draft · **Status:** working draft · **Extension:** `.nxp` · **Magic:** `NXP\x01`
+**Version:** 1.0-draft · **Extension:** `.nxp` · **Magic:** `NXP\x01`
 
-NXP is a clean-room container format for **unencrypted NX (Nintendo Switch family) game dumps**.
-It stores the loose directory trees that dump tools produce — ExeFS program files and full
-RomFS trees — for a base application together with its updates and add-on content, in a single
-random-access, integrity-checked, optionally compressed file.
+NXP is a clean-room container format for **unencrypted NX (Nintendo Switch 1/2) game dumps**.
 
-It is deliberately **generation-agnostic**: nothing in the format is specific to Switch 1 or
-Switch 2. Title IDs (`0100…` or `0400…`), NPDM revisions, key generations and firmware
-variants are carried as opaque data. The format is also **encryption-free and signature-free**
-by design; it is a packaging layer for content that has already been decrypted at dump time.
+It stores ExeFS program files and full RomFS trees, this means it stores updates, base content 
+and addons/dlcs in one compressed file.
+
+It can be used for either Switch 1 or Switch 2 games, of course that means you would have to
+decrypt the game and package it into an nxp. (which i am not aware of for Switch 1 Games).
 
 ---
 
-## 1. Design goals
-
-| # | Goal | Rationale |
-|---|------|-----------|
-| G1 | **Mountable, not just extractable** — a reader maps any subtree directly into a virtual filesystem | Emulator PRs become a thin FS adapter, not a NCA/IVFC reimplementation |
-| G2 | **Integrity** — every file content-addressed by SHA-256 | Verify dumps, detect corruption, enable safe dedup |
-| G3 | **Dedup** — identical files stored once, across base/update/DLC | Updates share 90 %+ of files with the base title |
-| G4 | **Compression with fallback** — per-file zstd, "stored" when it doesn't help | RomFS is frequently pre-compressed (`.zs`, `.zarc`); zstd on those wastes space |
-| G5 | **Trivially implementable** — no encryption, no signatures, fixed-size records, little-endian only | A reader is ~300 lines in any language |
-| G6 | **Forward-compatible** — reserved fields, per-extent codec IDs, meta TLV registry | v2 can add chunked codecs without breaking v1 readers |
-| G7 | **Deterministic builds** — same input tree ⇒ byte-identical output (for a given zstd version) | Reproducible packaging, diffable, cacheable |
-
-Non-goals: encryption, title-key handling, tickets, CNMT/CERT emulation, homebrew-signing,
-escaping from consoles. NXP is not an NSP/XCI replacement for console installs; it targets
-emulators, archivists, and tooling.
-
----
-
-## 2. File layout overview
-
-An NXP file is a sequence of three regions, all offsets absolute from file start:
+## 1. File layout overview
 
 ```
 ┌─────────────────────────────┐ offset 0x00
@@ -46,9 +24,8 @@ An NXP file is a sequence of three regions, all offsets absolute from file start
 └─────────────────────────────┘ file_size
 ```
 
-All integers are **little-endian**. All strings are **UTF-8** (stored byte-exact; producers
-should emit NFC). All padding/reserved bytes **must be zero**. Writers must refuse to emit
-and readers must reject nonconforming files (fail closed).
+All ints are **little-endian**.
+All strings are **UTF-8** (producers should emit NFC).
 
 ---
 
@@ -293,14 +270,47 @@ unknown types. Registered types:
 |------|---------|-------|
 | 0x0001 | NPDM | verbatim `main.npdm` bytes (any NPDM revision; opaque to this spec) |
 | 0x0002 | NACP | verbatim ApplicationControlProperty, if the dump provides one |
-| 0x0003 | Icon | JPEG, typically 256×256, as distributed on-console |
+| 0x0003 | Icon | image bytes for the default language; 256×256 JPEG as distributed on-console. Consumers SHOULD sniff the magic (`FF D8` JPEG, `89 50 4E 47` PNG) rather than assume |
 | 0x0004 | Display version | UTF-8, e.g. `1.0.0`; authority over decoding `version` |
-| 0x0005 | Title name | UTF-8 |
+| 0x0005 | Title name | UTF-8, default language |
 | 0x0006 | Publisher | UTF-8 |
 | 0x0007 | Build ID | 32 raw bytes = SHA-256 of `main` when known (mods/cheats lookup) |
 | 0x0008 | Source dump name | UTF-8, provenance |
+| 0x0009 | Localized titles | repeated `LocalizedRecord`s (§6.1); `lang` MUST NOT be empty |
+| 0x000A | Localized icons | repeated `LocalizedRecord`s (§6.1); image bytes as for 0x0003 |
 | 0x0100–0x7FFF | reserved for future spec versions | readers skip |
 | 0x8000–0xFFFF | vendor/tool private | readers skip |
+
+### 6.1 Localized records (types 0x0009 / 0x000A)
+
+On-console titles can present a different name and icon per console language (a Japanese
+title shows `ゼルダの伝説` on a `ja` console, `The Legend of Zelda` on `en-US`). These types
+carry that data as a sequence of records filling the payload up to `size`:
+
+```c
+struct LocalizedRecord {
+    uint8_t  lang_len;           // 0x00   1   language tag length in bytes
+    uint8_t  lang[lang_len];     // 0x01   …   BCP-47 tag, lowercase ("ja", "en-us", "zh-hans")
+    uint32_t data_len;           //        4   payload size in bytes
+    uint8_t  data[data_len];     //        …   UTF-8 name (0x0009) or image bytes (0x000A)
+};
+```
+
+Rules: records are read sequentially until the payload is exhausted; duplicate tags are
+invalid; an empty `lang` is invalid inside 0x0009/0x000A (0x0005/0x0003 are the default
+language records). Tags match case-insensitively; consumers pick the exact tag, else apply
+normal language-matching fallbacks, else use 0x0005/0x0003. Application-level metadata
+(names, icons, display version) belongs in the `base` package's meta block; containers
+without a base attach it to the first package.
+
+**Is UTF-8 enough for every language?** Yes. UTF-8 encodes the entire Unicode range —
+Japanese, Chinese (simplified and traditional), Korean, Cyrillic, Arabic, emoji, all of it —
+and every string field in NXP is UTF-8 with byte lengths (`name_len`, `data_len`), never
+null-terminated, so multi-byte characters are safe. Producers SHOULD emit NFC-normalized
+text but MUST NOT transform what they are given; readers MUST NOT re-normalize (byte-exact
+strings). Consumers that need console-shaped metadata transcode at their boundary (the
+console's NACP uses UTF-16 internally); Appendix B maps BCP-47 tags onto the NACP language
+table for that purpose.
 
 Producers MUST write the NPDM TLV when the ExeFS contains `main.npdm` (it is the authoritative
 source of the program ID). If a TLV and the tree disagree, the tree wins for content and the
@@ -417,3 +427,34 @@ normative for the format; it exists so implementers know the target interfaces.
   need no special support (multiple `base` packages are disallowed in v1 — revisit if
   multi-program dumps appear; §4.1.2).
 - No key handling anywhere: NXP content is plaintext; consumers skip ticket/key paths.
+
+---
+
+## Appendix B — NACP language table (informational, Switch-specific)
+
+The console's ApplicationControlProperty stores 16 per-language title entries plus a
+default. Consumers synthesizing an NACP from NXP meta TLVs can use this mapping from
+BCP-47 tags to NACP title indices (the NACP entry at index 0x10/`Default` holds the
+fallback name; TLV 0x0005/0x0003 map there):
+
+| BCP-47 tag (NXP) | NACP index | NACP entry |
+|------------------|-----------|-------------|
+| `en-us` | 0 | AmericanEnglish |
+| `en-gb` | 1 | BritishEnglish |
+| `ja` | 2 | Japanese |
+| `fr` | 3 | French |
+| `de` | 4 | German |
+| `es-419` | 5 | LatinAmericanSpanish |
+| `es` | 6 | Spanish |
+| `it` | 7 | Italian |
+| `nl` | 8 | Dutch |
+| `fr-ca` | 9 | CanadianFrench |
+| `pt` | 10 | Portuguese |
+| `ru` | 11 | Russian |
+| `ko` | 12 | Korean |
+| `zh-hant` | 13 | TraditionalChinese |
+| `zh-hans` | 14 | SimplifiedChinese |
+| `pt-br` | 15 | BrazilianPortuguese |
+
+Language-matching for consumers: exact tag → tag prefix (`en-us` falls back to `en`) →
+primary subtag (`en`) → 0x0005 default → title ID.
