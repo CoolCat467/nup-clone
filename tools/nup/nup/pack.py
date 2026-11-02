@@ -1,19 +1,17 @@
 """NUP packer: dump directory tree -> .nup container.
 
-Implements the producer conformance rules of SPEC.md v1:
-- canonical tree shape (exefs/, romfs/), .listing artifacts excluded
-- bytewise-sorted children, contiguous child slots
-- per-file SHA-256, dedup by hash, 16-byte extent alignment
-- per-file zstd with raw fallback, content size embedded in frame
-- build ID TLV (ModuleId from exefs/main) when the dump provides it
-- derived UUID, deterministic output for a given zstd version
+Writes the container: file extents (raw/zstd, deduped, 16-byte aligned),
+per-package meta blocks, the TOC and the superblock. Dump discovery and
+the tree model live in .discover; meta block assembly in .meta.
+
+Implements the producer conformance rules of SPEC.md v1 and produces
+deterministic output for a given zstd version.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
-import re
 import struct
 import sys
 
@@ -24,235 +22,126 @@ except ImportError:  # pragma: no cover
 
 from . import format as F
 from . import meta as M
-
-ARTIFACT_NAMES = {b".listing"}  # SPEC §6.3 reserved artifact names
-FILE_TAG = 0x8000_0000  # child-slot marker: slot >= FILE_TAG references files[]
-_DEC = re.compile(r"^\d+$")
-_HEX = re.compile(r"^[0-9a-fA-F]{16}$")
+from .discover import ARTIFACT_NAMES, DirObj, FILE_TAG, PackInput, Tree, discover
 
 
 def have_zstd() -> bool:
     return zstandard is not None
 
 
-def parse_npdm_program_id(data: bytes) -> int | None:
-    """Extract the program ID from an NPDM (any known header revision).
+def _locate_content_dirs(packages: list[PackInput],
+                         roots: list[DirObj]) -> list[F.Package]:
+    """Package records; exefs/romfs located from root children by name."""
+    pkg_records: list[F.Package] = []
+    for pkg, root in zip(packages, roots):
+        rec = F.Package(title_id=pkg.title_id, root_dir=root.id, version=pkg.version,
+                        kind=pkg.kind, flags=pkg.flags)
+        for child in root.children:
+            if isinstance(child, DirObj):
+                if child.name == b"exefs":
+                    rec.exefs_dir = child.id
+                elif child.name == b"romfs":
+                    rec.romfs_dir = child.id
+        pkg_records.append(rec)
+    return pkg_records
 
-    ACI0 layout: magic 'ACI0' (4), reserved (0xC), program id (u64 LE) at +0x10.
+
+def _derive_uuid(pkg_records: list[F.Package]) -> bytes:
+    """UUID (SPEC §2.1): derived from package identities."""
+    h = hashlib.sha256()
+    for rec in pkg_records:
+        h.update(struct.pack("<QIB", rec.title_id, rec.version, rec.kind))
+    return h.digest()[:16]
+
+
+def _write_extents(out, tree: Tree, zc, blob_cursor: int, progress) -> int:
+    """Append file extents (dedup by hash, 16-byte aligned). Returns end offset."""
+    total = len(tree.files)
+    seen: dict[bytes, tuple[int, int, int]] = {}  # sha256 -> (offset, size, codec)
+    for i, fnode in enumerate(tree.files):
+        with open(fnode.src_path, "rb") as fh:
+            data = fh.read()
+        fnode.size = len(data)
+        fnode.sha256 = hashlib.sha256(data).digest()
+        hit = seen.get(fnode.sha256)
+        if hit is not None and fnode.size > 0:
+            # Dedup (SPEC §3.6): identical content shares one extent.
+            fnode.extent_offset, fnode.extent_size, fnode.codec = hit
+        elif fnode.size == 0:
+            fnode.extent_offset, fnode.extent_size, fnode.codec = 0, 0, F.CODEC_RAW
+        else:
+            payload, codec = data, F.CODEC_RAW
+            if zc is not None:
+                comp = zc.compress(data)
+                if len(comp) < fnode.size:
+                    payload, codec = comp, F.CODEC_ZSTD
+            aligned = (blob_cursor + F.EXTENT_ALIGN - 1) & ~(F.EXTENT_ALIGN - 1)
+            out.write(b"\0" * (aligned - blob_cursor))  # zero the gap
+            blob_cursor = aligned
+            fnode.extent_offset = blob_cursor
+            fnode.extent_size = len(payload)
+            fnode.codec = codec
+            out.write(payload)
+            blob_cursor += len(payload)
+            seen[fnode.sha256] = (fnode.extent_offset, fnode.extent_size, fnode.codec)
+        if progress:
+            progress(i + 1, total, fnode)
+    return blob_cursor
+
+
+def _write_meta_blocks(out, packages: list[PackInput], dump_label: str,
+                       names, icons, display_version, blob_cursor: int):
+    """Append per-package meta blocks after the blob region.
+
+    Returns (meta_offsets, end offset).
     """
-    off = data.find(b"ACI0")
-    if off < 0 or off + 0x18 > len(data):
-        return None
-    return struct.unpack_from("<Q", data, off + 0x10)[0]
+    meta_offsets: list[tuple[int, int]] = []
+    app_extra = M.app_meta(names, icons, display_version, dump_label)
+    app_pkg_idx = next((i for i, p in enumerate(packages) if p.kind == F.KIND_BASE), 0)
+    for i, pkg in enumerate(packages):
+        block = M.meta_block(pkg, dump_label, app_extra if i == app_pkg_idx else b"")
+        mo = blob_cursor  # == out.tell(); extents were appended sequentially
+        out.write(block)
+        blob_cursor += len(block)
+        meta_offsets.append((mo, len(block)))
+    return meta_offsets, blob_cursor
 
 
-class DirObj:
-    __slots__ = ("name", "children", "id", "first_child", "child_count")
-
-    def __init__(self, name: bytes) -> None:
-        self.name = name
-        self.children: list[DirObj | FileObj] = []
-        self.id = -1
-        self.first_child = 0
-        self.child_count = 0
-
-
-class FileObj:
-    __slots__ = ("name", "src_path", "size", "sha256", "extent_offset",
-                 "extent_size", "codec", "codec_flags")
-
-    def __init__(self, name: bytes, src_path: str) -> None:
-        self.name = name
-        self.src_path = src_path
-        self.size = 0
-        self.sha256 = b"\0" * 32
-        self.extent_offset = 0
-        self.extent_size = 0
-        self.codec = F.CODEC_RAW
-        self.codec_flags = 0
-
-
-class PackInput:
-    """One package to store: kind, ids, and the source directory of its tree."""
-
-    def __init__(self, kind: int, src: str, title_id: int = 0, version: int = 0,
-                 flags: int = 0) -> None:
-        self.kind = kind
-        self.src = src
-        self.title_id = title_id
-        self.version = version
-        self.flags = flags
-        self.npdm: bytes | None = None
-        self.build_id: bytes | None = None
-
-
-def _find_npdm(src: str) -> str | None:
-    for cand in ("exefs/main.npdm", "main.npdm"):
-        p = os.path.join(src, cand)
-        if os.path.isfile(p):
-            return p
-    return None
-
-
-def _read_build_id(src: str) -> bytes | None:
-    """ModuleId: bytes 0x40..0x60 of exefs/main (NSO0/NRO0 build-id field).
-
-    Returns None when main is absent, shorter than 0x60 bytes, or has an
-    unknown magic - the TLV is optional metadata.
-    """
-    for cand in ("exefs/main", "main"):
-        p = os.path.join(src, cand)
-        if os.path.isfile(p):
-            with open(p, "rb") as fh:
-                head = fh.read(0x60)
-            if len(head) == 0x60 and (head[:4] == b"NSO0" or head[0x10:0x14] == b"NRO0"):
-                return head[0x40:0x60]
-            return None
-    return None
-
-
-def _resolve_title_id(pkg: PackInput, override: int | None) -> None:
-    npdm_path = _find_npdm(pkg.src)
-    if npdm_path:
-        with open(npdm_path, "rb") as fh:
-            pkg.npdm = fh.read()
-        pid = parse_npdm_program_id(pkg.npdm)
-        if pid is not None and pid != 0:
-            pkg.title_id = pid
-    pkg.build_id = _read_build_id(pkg.src)
-    if override is not None:
-        pkg.title_id = override
-
-
-def _looks_like_content(d: str) -> bool:
-    return os.path.isdir(os.path.join(d, "exefs")) or os.path.isdir(os.path.join(d, "romfs"))
-
-
-def _collect_dlcs(dlc_dir: str) -> list[PackInput]:
-    """dlc/<16-hex title id>/<index>/ content dirs (SPEC §3.1.2 addon ids)."""
-    out: list[PackInput] = []
-    for name in sorted(os.listdir(dlc_dir)):
-        tdir = os.path.join(dlc_dir, name)
-        if not _HEX.match(name) or not os.path.isdir(tdir):
-            continue
-        for idx in sorted(os.listdir(tdir)):
-            cdir = os.path.join(tdir, idx)
-            if os.path.isdir(cdir) and _looks_like_content(cdir):
-                out.append(PackInput(F.KIND_ADDON, cdir, title_id=int(name, 16)))
-    return out
-
-
-def _collect_updates(upd_dir: str, base_title_id: int, flags: int) -> list[PackInput]:
-    """updates/<decimal version>/ content dirs; flags propagates standalone_update."""
-    out: list[PackInput] = []
-    for name in sorted(os.listdir(upd_dir)):
-        p = os.path.join(upd_dir, name)
-        if not _DEC.match(name) or not os.path.isdir(p) or not _looks_like_content(p):
-            continue
-        upd = PackInput(F.KIND_UPDATE, p, version=int(name, 10), flags=flags)
-        _resolve_title_id(upd, None)
-        if upd.title_id == 0:
-            upd.title_id = base_title_id
-        out.append(upd)
-    return out
-
-
-def discover(src: str, base_title_id: int | None) -> list[PackInput]:
-    """Discover packages in a dump directory (SPEC §3.1.3 conventions)."""
-    packages: list[PackInput] = []
-    upd_dir = os.path.join(src, "updates")
-    has_updates = os.path.isdir(upd_dir)
-
-    if os.path.isdir(os.path.join(src, "base")):
-        base = PackInput(F.KIND_BASE, os.path.join(src, "base"))
-        _resolve_title_id(base, base_title_id)
-        packages.append(base)
-        if has_updates:
-            packages.extend(_collect_updates(upd_dir, base.title_id, flags=0))
-        dlc_dir = os.path.join(src, "dlc")
-        if os.path.isdir(dlc_dir):
-            packages.extend(_collect_dlcs(dlc_dir))
-    elif has_updates:
-        # Update-only dump:
-        # every update package carries standalone_update (SPEC §3.1.2, flags
-        # bit 0 at offset 0x19). DLC may still ride along in dlc/.
-        packages.extend(_collect_updates(upd_dir, base_title_id or 0,
-                                         flags=F.PKG_FLAG_STANDALONE_UPDATE))
-        dlc_dir = os.path.join(src, "dlc")
-        if os.path.isdir(dlc_dir):
-            packages.extend(_collect_dlcs(dlc_dir))
-    elif _looks_like_content(src):
-        base = PackInput(F.KIND_BASE, src)
-        _resolve_title_id(base, base_title_id)
-        packages.append(base)
-    else:
-        raise SystemExit(
-            f"pack: {src!r} is neither a dump bundle (base/updates/dlc), an update-only "
-            f"dump (updates/), nor a content directory (exefs/ or romfs/)")
-    if not packages:
-        raise SystemExit(f"pack: no packages found in {src!r}")
-    return packages
-
-
-class Tree:
-    """Node store for one pack run (global across packages)."""
-
-    def __init__(self, artifacts: set[bytes]) -> None:
-        self.artifacts = artifacts
-        self.dirs: list[DirObj] = []
-        self.files: list[FileObj] = []
-        self.children: list[int] = []  # serial ids; see assign()
-        self.pool: dict[bytes, int] = {}
-        self.pool_size = 0
-
-    def intern(self, name: bytes) -> int:
-        off = self.pool.get(name)
-        if off is None:
-            off = self.pool_size
-            self.pool[name] = off
-            self.pool_size += len(name)
-        return off
-
-    def add_tree(self, src: str) -> DirObj:
-        return self._walk(src, b"")
-
-    def _walk(self, src: str, name: bytes) -> DirObj:
-        node = DirObj(name)
-        try:
-            entries = sorted(os.scandir(src),
-                             key=lambda e: e.name.encode("utf-8", "surrogateescape"))
-        except OSError as e:
-            raise SystemExit(f"pack: cannot read {src}: {e}")
-        for e in entries:
-            ename = e.name.encode("utf-8", "surrogateescape")
-            if e.is_dir(follow_symlinks=False):
-                node.children.append(self._walk(e.path, ename))
-            elif ename not in self.artifacts:
-                node.children.append(FileObj(ename, e.path))
-        return node
-
-    def assign(self, roots: list[DirObj]) -> None:
-        """Assign serial order: dirs pre-order, files in first-reference order,
-        contiguous child slots per directory."""
-        def rec(d: DirObj) -> int:
-            did = len(self.dirs)
-            d.id = did
-            self.dirs.append(d)
-            slot_base = len(self.children)
-            self.children.extend([0] * len(d.children))
-            for i, child in enumerate(d.children):
-                if isinstance(child, FileObj):
-                    self.children[slot_base + i] = FILE_TAG + len(self.files)
-                    self.files.append(child)
-            for i, child in enumerate(d.children):
-                if isinstance(child, DirObj):
-                    self.children[slot_base + i] = rec(child)
-            d.first_child = slot_base
-            d.child_count = len(d.children)
-            return did
-
-        for root in roots:
-            rec(root)
+def _build_toc(tree: Tree, pkg_records: list[F.Package],
+               meta_offsets: list[tuple[int, int]],
+               dir_count: int, file_count: int, toc_size: int) -> bytearray:
+    """Serialize the TOC: package records, node arrays, children, string pool."""
+    toc = bytearray(toc_size)
+    pos = F._toc_head_s.size
+    for rec, (mo, ms) in zip(pkg_records, meta_offsets):
+        F._pkg_s.pack_into(toc, pos, rec.title_id, rec.root_dir, rec.exefs_dir,
+                           rec.romfs_dir, rec.version, rec.kind, rec.flags, 0, 0,
+                           mo, ms)
+        pos += F.PKG_SIZE
+    for d in tree.dirs:
+        off = tree.intern(d.name)
+        F._dir_s.pack_into(toc, pos, off, len(d.name), d.first_child,
+                           d.child_count, 0)
+        pos += F.DIR_SIZE
+    for fnode in tree.files:
+        off = tree.intern(fnode.name)
+        F._file_s.pack_into(toc, pos, off, len(fnode.name), fnode.size,
+                            fnode.extent_offset, fnode.extent_size, fnode.sha256,
+                            fnode.codec, fnode.codec_flags, 0)
+        pos += F.FILE_SIZE
+    for cid in tree.children:
+        if cid >= FILE_TAG:
+            cid = dir_count + (cid - FILE_TAG)
+        struct.pack_into("<I", toc, pos, cid)
+        pos += 4
+    pool_off = pos
+    pool = bytearray(tree.pool_size)
+    for name, off in tree.pool.items():
+        pool[off:off + len(name)] = name
+    toc[pool_off:pool_off + len(pool)] = pool
+    F._toc_head_s.pack_into(toc, 0, F.TOC_MAGIC, len(pkg_records), dir_count,
+                            file_count, pool_off, len(pool), 0)
+    return toc
 
 
 def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False,
@@ -282,24 +171,8 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
     for fnode in tree.files:
         tree.intern(fnode.name)
 
-    # Package records; exefs/romfs located from root children by name.
-    pkg_records: list[F.Package] = []
-    for pkg, root in zip(packages, roots):
-        rec = F.Package(title_id=pkg.title_id, root_dir=root.id, version=pkg.version,
-                        kind=pkg.kind, flags=pkg.flags)
-        for child in root.children:
-            if isinstance(child, DirObj):
-                if child.name == b"exefs":
-                    rec.exefs_dir = child.id
-                elif child.name == b"romfs":
-                    rec.romfs_dir = child.id
-        pkg_records.append(rec)
-
-    # UUID (SPEC §2.1): derived from package identities.
-    h = hashlib.sha256()
-    for rec in pkg_records:
-        h.update(struct.pack("<QIB", rec.title_id, rec.version, rec.kind))
-    uuid = h.digest()[:16]
+    pkg_records = _locate_content_dirs(packages, roots)
+    uuid = _derive_uuid(pkg_records)
 
     # ---- TOC plan ----
     toc_size = (F._toc_head_s.size + len(pkg_records) * F.PKG_SIZE
@@ -311,85 +184,15 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
 
     with open(out_path, "wb") as out:
         out.write(b"\0" * blob_offset)  # placeholder for header + TOC
-        blob_cursor = blob_offset
-
-        total = len(tree.files)
-        seen: dict[bytes, tuple[int, int, int]] = {}  # sha256 -> (offset, size, codec)
-        for i, fnode in enumerate(tree.files):
-            with open(fnode.src_path, "rb") as fh:
-                data = fh.read()
-            fnode.size = len(data)
-            fnode.sha256 = hashlib.sha256(data).digest()
-            hit = seen.get(fnode.sha256)
-            if hit is not None and fnode.size > 0:
-                # Dedup (SPEC §3.6): identical content shares one extent.
-                fnode.extent_offset, fnode.extent_size, fnode.codec = hit
-            elif fnode.size == 0:
-                fnode.extent_offset, fnode.extent_size, fnode.codec = 0, 0, F.CODEC_RAW
-            else:
-                payload, codec = data, F.CODEC_RAW
-                if zc is not None:
-                    comp = zc.compress(data)
-                    if len(comp) < fnode.size:
-                        payload, codec = comp, F.CODEC_ZSTD
-                aligned = (blob_cursor + F.EXTENT_ALIGN - 1) & ~(F.EXTENT_ALIGN - 1)
-                out.write(b"\0" * (aligned - blob_cursor))  # zero the gap
-                blob_cursor = aligned
-                fnode.extent_offset = blob_cursor
-                fnode.extent_size = len(payload)
-                fnode.codec = codec
-                out.write(payload)
-                blob_cursor += len(payload)
-                seen[fnode.sha256] = (fnode.extent_offset, fnode.extent_size, fnode.codec)
-            if progress:
-                progress(i + 1, total, fnode)
-
-        file_size = blob_cursor
-
-        # ---- meta blocks (after blob region) ----
-        meta_offsets: list[tuple[int, int]] = []
+        blob_cursor = _write_extents(out, tree, zc, blob_offset, progress)
         dump_label = os.path.basename(os.path.normpath(src))
-        app_extra = M.app_meta(names, icons, display_version, dump_label)
-        app_pkg_idx = next((i for i, p in enumerate(packages) if p.kind == F.KIND_BASE), 0)
-        for i, pkg in enumerate(packages):
-            block = M.meta_block(pkg, dump_label, app_extra if i == app_pkg_idx else b"")
-            mo = blob_cursor  # == out.tell(); extents were appended sequentially
-            out.write(block)
-            blob_cursor += len(block)
-            meta_offsets.append((mo, len(block)))
+        meta_offsets, blob_cursor = _write_meta_blocks(out, packages, dump_label,
+                                                       names, icons, display_version,
+                                                       blob_cursor)
         file_size = blob_cursor
 
-        # ---- serialize TOC ----
-        toc = bytearray(toc_size)
-        pos = F._toc_head_s.size
-        for rec, (mo, ms) in zip(pkg_records, meta_offsets):
-            F._pkg_s.pack_into(toc, pos, rec.title_id, rec.root_dir, rec.exefs_dir,
-                               rec.romfs_dir, rec.version, rec.kind, rec.flags, 0, 0,
-                               mo, ms)
-            pos += F.PKG_SIZE
-        for d in tree.dirs:
-            off = tree.intern(d.name)
-            F._dir_s.pack_into(toc, pos, off, len(d.name), d.first_child,
-                               d.child_count, 0)
-            pos += F.DIR_SIZE
-        for fnode in tree.files:
-            off = tree.intern(fnode.name)
-            F._file_s.pack_into(toc, pos, off, len(fnode.name), fnode.size,
-                                fnode.extent_offset, fnode.extent_size, fnode.sha256,
-                                fnode.codec, fnode.codec_flags, 0)
-            pos += F.FILE_SIZE
-        for cid in tree.children:
-            if cid >= FILE_TAG:
-                cid = dir_count + (cid - FILE_TAG)
-            struct.pack_into("<I", toc, pos, cid)
-            pos += 4
-        pool_off = pos
-        pool = bytearray(tree.pool_size)
-        for name, off in tree.pool.items():
-            pool[off:off + len(name)] = name
-        toc[pool_off:pool_off + len(pool)] = pool
-        F._toc_head_s.pack_into(toc, 0, F.TOC_MAGIC, len(pkg_records), dir_count,
-                                file_count, pool_off, len(pool), 0)
+        toc = _build_toc(tree, pkg_records, meta_offsets, dir_count, file_count,
+                         toc_size)
 
         toc_sha = hashlib.sha256(toc).digest()
         superblock = F.pack_super(F.MAGIC, F.HEADER_SIZE, 1, F.HEADER_SIZE, toc_size,
