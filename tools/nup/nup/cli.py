@@ -96,6 +96,9 @@ def _cmd_info(args: argparse.Namespace) -> int:
                 langs = ", ".join(f"{l.decode()}={n.decode('utf-8', 'replace')!r}"
                                   for l, n in sorted(loc.items()))
                 print(f"         localized: {langs}")
+            bid = r.build_id(p)
+            if bid:
+                print(f"         build-id: {bid.rstrip(b'\0').hex().upper()}")
             if not args.tree:
                 continue
             if p.exefs_dir != F.NO_DIR:

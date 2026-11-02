@@ -268,7 +268,7 @@ Readers must skip unknown types. Registered types:
 | 0x0004 | Display version | UTF-8, e.g. `1.0.0`; authority over decoding `version` |
 | 0x0005 | Title name | UTF-8, default language |
 | 0x0006 | Publisher | UTF-8 |
-| 0x0007 | Build ID | 32 raw bytes = SHA-256 of `main` when known (mods/cheats lookup) |
+| 0x0007 | Build ID | 32 raw bytes = ModuleId: bytes `0x40..0x60` of the package's `main` ExeFS file (NSO0 or NRO0 header) |
 | 0x0008 | Source dump name | UTF-8, provenance |
 | 0x0009 | Localized titles | repeated `LocalizedRecord`s (§6.1); `lang` MUST NOT be empty |
 | 0x000A | Localized icons | repeated `LocalizedRecord`s (§6.1); image bytes as for 0x0003 |

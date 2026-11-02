@@ -5,6 +5,7 @@ Implements the producer conformance rules of SPEC.md v1:
 - bytewise-sorted children, contiguous child slots
 - per-file SHA-256, dedup by hash, 16-byte extent alignment
 - per-file zstd with raw fallback, content size embedded in frame
+- build ID TLV (ModuleId from exefs/main) when the dump provides it
 - derived UUID, deterministic output for a given zstd version
 """
 
@@ -81,6 +82,7 @@ class PackInput:
         self.version = version
         self.flags = flags
         self.npdm: bytes | None = None
+        self.build_id: bytes | None = None
 
 
 def _find_npdm(src: str) -> str | None:
@@ -88,6 +90,23 @@ def _find_npdm(src: str) -> str | None:
         p = os.path.join(src, cand)
         if os.path.isfile(p):
             return p
+    return None
+
+
+def _read_build_id(src: str) -> bytes | None:
+    """ModuleId: bytes 0x40..0x60 of exefs/main (NSO0/NRO0 build-id field).
+
+    Returns None when main is absent, shorter than 0x60 bytes, or has an
+    unknown magic - the TLV is optional metadata.
+    """
+    for cand in ("exefs/main", "main"):
+        p = os.path.join(src, cand)
+        if os.path.isfile(p):
+            with open(p, "rb") as fh:
+                head = fh.read(0x60)
+            if len(head) == 0x60 and (head[:4] == b"NSO0" or head[0x10:0x14] == b"NRO0"):
+                return head[0x40:0x60]
+            return None
     return None
 
 
@@ -99,6 +118,7 @@ def _resolve_title_id(pkg: PackInput, override: int | None) -> None:
         pid = parse_npdm_program_id(pkg.npdm)
         if pid is not None and pid != 0:
             pkg.title_id = pid
+    pkg.build_id = _read_build_id(pkg.src)
     if override is not None:
         pkg.title_id = override
 
@@ -238,6 +258,8 @@ def _meta_block(pkg: PackInput, dump_label: str, app_extra: bytes = b"") -> byte
     recs: list[tuple[int, bytes]] = []
     if pkg.npdm:
         recs.append((F.TLV_NPDM, pkg.npdm))
+    if pkg.build_id:
+        recs.append((F.TLV_BUILD_ID, pkg.build_id))
     recs.append((F.TLV_SOURCE_DUMP, dump_label.encode("utf-8")))
     if app_extra:
         # merge prebuilt application-level TLVs (names/icons/display version)

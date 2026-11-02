@@ -281,6 +281,16 @@ class NupReader:
         """TLV type -> payload, preferring the base (or first) package's block."""
         return dict(self.meta_records(pkg))
 
+    def build_id(self, pkg: PackageInfo) -> bytes | None:
+        """32-byte ModuleId from meta TLV 0x0007, or None if absent (SPEC §5).
+
+        Bytes 0x40..0x60 of the package's `main` (NSO0/NRO0 header); only the
+        first 0x14 are significant in SDK-built titles."""
+        payload = self.app_meta(pkg).get(F.TLV_BUILD_ID)
+        if payload is not None and len(payload) != 32:
+            raise F.NupError(f"build ID TLV payload is {len(payload)} bytes, expected 32")
+        return payload
+
     # ---- convenience ----
 
     def find_package(self, kind: int | None = None, title_id: int | None = None,
