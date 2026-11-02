@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--subtree", help="relative path from package root, e.g. romfs")
     p.set_defaults(fn=_cmd_extract)
 
-    p = sub.add_parser("verify", help="verify structural (and with --deep, content) integrity")
+    p = sub.add_parser("verify", help="verify integrity (structure + per-file SHA-256)")
     p.add_argument("file")
     p.add_argument("--fast", action="store_true", help="skip per-file SHA-256 recompute")
     p.add_argument("--max-problems", type=int, default=20)
