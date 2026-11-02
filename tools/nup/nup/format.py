@@ -35,7 +35,7 @@ KIND_NAMES = {
     KIND_SYSTEM: "system",
 }
 
-# Meta TLV types (SPEC §6)
+# Meta TLV types (SPEC §5)
 TLV_NPDM = 0x0001
 TLV_NACP = 0x0002
 TLV_ICON = 0x0003
@@ -56,7 +56,7 @@ _file_s = struct.Struct("<IIQQQ32sBBH12x")  # 80
 _toc_head_s = struct.Struct("<4sIQQQQQ")  # 48
 _tlv_s = struct.Struct("<HHI")  # 8
 
-# match exactly (SPEC §8);
+# struct sizes must match the documented record sizes exactly (SPEC §8);
 assert _super_s.size == HEADER_SIZE
 assert _pkg_s.size == PKG_SIZE
 assert _dir_s.size == DIR_SIZE

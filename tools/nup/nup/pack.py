@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover
 
 from . import format as F
 
-ARTIFACT_NAMES = {b".listing"}  # SPEC §7.3 reserved artifact names
+ARTIFACT_NAMES = {b".listing"}  # SPEC §6.3 reserved artifact names
 FILE_TAG = 0x8000_0000  # child-slot marker: slot >= FILE_TAG references files[]
 _DEC = re.compile(r"^\d+$")
 _HEX = re.compile(r"^[0-9a-fA-F]{16}$")
@@ -143,7 +143,7 @@ def _collect_updates(upd_dir: str, base_title_id: int, flags: int) -> list[PackI
 
 
 def discover(src: str, base_title_id: int | None) -> list[PackInput]:
-    """Discover packages in a dump directory (SPEC §4.1.3 conventions)."""
+    """Discover packages in a dump directory (SPEC §3.1.3 conventions)."""
     packages: list[PackInput] = []
     upd_dir = os.path.join(src, "updates")
     has_updates = os.path.isdir(upd_dir)
@@ -166,7 +166,7 @@ def discover(src: str, base_title_id: int | None) -> list[PackInput]:
                         packages.append(PackInput(F.KIND_ADDON, cdir, title_id=int(name, 16)))
     elif has_updates:
         # Update-only dump:
-        # every update package carries standalone_update (SPEC §4.1.2, flags
+        # every update package carries standalone_update (SPEC §3.1.2, flags
         # bit 0 at offset 0x19). DLC may still ride along in dlc/.
         packages.extend(_collect_updates(upd_dir, base_title_id or 0,
                                          flags=F.PKG_FLAG_STANDALONE_UPDATE))
@@ -288,7 +288,7 @@ def _read_file(path: str) -> bytes:
 
 def _app_meta(names: dict[str | None, str] | None, icons: dict[str | None, str] | None,
               display_version: str | None, dump_label: str) -> bytes:
-    """Application-level meta TLVs (SPEC §6.1): names/icons localized, plus
+    """Application-level meta TLVs (SPEC §5.1): names/icons localized, plus
     display version and provenance. Attached to the base package (or first)."""
     recs: list[tuple[int, bytes]] = []
     names = names or {}
@@ -367,7 +367,7 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
                     rec.romfs_dir = child.id
         pkg_records.append(rec)
 
-    # UUID (SPEC §3.1): derived from package identities.
+    # UUID (SPEC §2.1): derived from package identities.
     h = hashlib.sha256()
     for rec in pkg_records:
         h.update(struct.pack("<QIB", rec.title_id, rec.version, rec.kind))
@@ -394,7 +394,7 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
             fnode.sha256 = hashlib.sha256(data).digest()
             hit = seen.get(fnode.sha256)
             if hit is not None and fnode.size > 0:
-                # Dedup (SPEC §4.6): identical content shares one extent.
+                # Dedup (SPEC §3.6): identical content shares one extent.
                 fnode.extent_offset, fnode.extent_size, fnode.codec = hit
             elif fnode.size == 0:
                 fnode.extent_offset, fnode.extent_size, fnode.codec = 0, 0, F.CODEC_RAW

@@ -45,7 +45,7 @@ struct NupSuperblock {           // offset  size
     uint64_t file_size;          // 0x40   8    total size of this .nup file
     uint32_t package_count;      // 0x48   4    number of package records
     uint32_t flags;              // 0x4C   4    0 for v1; unknown bits ⇒ reject
-    uint8_t  uuid[16];           // 0x50  16    content-derived, see §3.1
+    uint8_t  uuid[16];           // 0x50  16    content-derived, see §2.1
     uint8_t  reserved[32];       // 0x60  32    zero
 };                               // total  0x80
 ```
@@ -85,7 +85,7 @@ struct NupToc {
     NupPackage packages[package_count];   // 0x30, each 0x40 bytes
     NupDir     dirs[dir_count];           // each 0x18 bytes
     NupFile    files[file_count];         // each 0x50 bytes
-    uint32_t   children[child_slot_count];// 4 bytes each, see §4.3
+    uint32_t   children[child_slot_count];// 4 bytes each, see §3.3
     uint8_t    string_pool[];             // at string_pool_off
 };
 ```
@@ -98,9 +98,9 @@ struct NupPackage {              // offset  size
     uint32_t root_dir;           // 0x08   4   index into dirs[]; package tree root
     uint32_t exefs_dir;          // 0x0C   4   index into dirs[], or 0xFFFFFFFF
     uint32_t romfs_dir;          // 0x10   4   index into dirs[], or 0xFFFFFFFF
-    uint32_t version;            // 0x14   4   NCM content version, verbatim (see §4.1.1)
-    uint8_t  kind;               // 0x18   1   see §4.1.2
-    uint8_t  flags;              // 0x19   1   bit0 = standalone_update (§4.1.2); other bits zero for v1
+    uint32_t version;            // 0x14   4   NCM content version, verbatim (see §3.1.1)
+    uint8_t  kind;               // 0x18   1   see §3.1.2
+    uint8_t  flags;              // 0x19   1   bit0 = standalone_update (§3.1.2); other bits zero for v1
     uint16_t reserved;           // 0x1A   2   zero
     uint32_t reserved2;          // 0x1C   4   zero
     uint64_t meta_offset;        // 0x20   8   absolute file offset of meta block, or 0
@@ -148,11 +148,11 @@ The bit is package record `flags`, offset `0x19`, bit 0 (value `0x01`) - set it 
 `exefs_dir`/`romfs_dir` point at these directories when present.
 Readers MUST resolve content through the record fields.
 Producers MUST exclude dump-tool artifacts - `.listing` files and
-anything else matching the reserved-artifact list (§7.3) unless otherwise.
+anything else matching the reserved-artifact list (§6.3) unless otherwise.
 
 #### 3.1.4 Update semantics
 
-Cross-package dedup (§4.4) makes the shared files cheap.
+Cross-package dedup (§3.6) makes the shared files cheap.
 Delta packaging is a possible v2 extension via flags.
 
 ### 3.2 Directory record - `NupDir` (0x18 bytes)
@@ -270,8 +270,8 @@ Readers must skip unknown types. Registered types:
 | 0x0006 | Publisher | UTF-8 |
 | 0x0007 | Build ID | 32 raw bytes = ModuleId: bytes `0x40..0x60` of the package's `main` ExeFS file (NSO0 or NRO0 header) |
 | 0x0008 | Source dump name | UTF-8, provenance |
-| 0x0009 | Localized titles | repeated `LocalizedRecord`s (§6.1); `lang` MUST NOT be empty |
-| 0x000A | Localized icons | repeated `LocalizedRecord`s (§6.1); image bytes as for 0x0003 |
+| 0x0009 | Localized titles | repeated `LocalizedRecord`s (§5.1); `lang` MUST NOT be empty |
+| 0x000A | Localized icons | repeated `LocalizedRecord`s (§5.1); image bytes as for 0x0003 |
 | 0x0100–0x7FFF | reserved for future spec versions | readers skip |
 | 0x8000–0xFFFF | vendor/tool private | readers skip |
 
@@ -305,7 +305,7 @@ TLV wins for metadata.
 
 ### 6.1 Reader conformance (must)
 
-1. Validate superblock per §3; verify TOC SHA-256 before trusting any TOC-derived value.
+1. Validate superblock per §2; verify TOC SHA-256 before trusting any TOC-derived value.
 2. Bounds-check every offset/size against `file_size`; reject overlaps between regions.
 3. Treat `version`, `title_id`, NPDM/NACP payloads as opaque.
 4. Reject unknown `codec`, unknown `kind >= 5`, unknown superblock `flags` bits.
@@ -316,8 +316,8 @@ TLV wins for metadata.
 
 1. All record fields documented "zero" are zero; all extents 16-aligned; children sorted.
 2. Per-file SHA-256 computed over the exact uncompressed bytes.
-3. Superblock/TOC/blob layout per §2–§5; TOC hash correct.
-4. `.listing` and other dump artifacts excluded per §4.1.3 unless the operator overrides.
+3. Superblock/TOC/blob layout per §2–§4; TOC hash correct.
+4. `.listing` and other dump artifacts excluded per §6.3 unless the operator overrides.
 
 ### 6.3 Reserved artifact names
 
@@ -408,7 +408,7 @@ normative for the format.
   then DLC - mirroring how patch NCAs overlay base NCAs today.
 - Multi-program titles: `title_id & ~0xF` grouping applies as on-console; package records
   need no special support (multiple `base` packages are disallowed in v1 - revisit if
-  multi-program dumps appear; §4.1.2).
+  multi-program dumps appear; §3.1.2).
 - No key handling anywhere: NUP content is plaintext; consumers skip ticket/key paths.
 
 ---

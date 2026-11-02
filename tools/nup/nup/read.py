@@ -1,6 +1,6 @@
 """NUP reader: validated parsing, virtual-tree access, extraction.
 
-Reader conformance (SPEC §7.1): validate superblock, verify TOC SHA-256
+Reader conformance (SPEC §6.1): validate superblock, verify TOC SHA-256
 before trusting TOC-derived values, bounds-check every offset/size, treat
 title_id/version/NPDM/NACP as opaque, reject unknown codecs and flags.
 """
@@ -172,7 +172,7 @@ class NupReader:
                 raise F.NupError(f"package {p.index}: meta block out of bounds")
             if p.flags & ~F.PKG_FLAG_STANDALONE_UPDATE:
                 raise F.NupError(f"package {p.index}: unknown package flags {p.flags:#x}")
-        # SPEC §4.1.2: update packages need a base in the same container, or
+        # SPEC §3.1.2: update packages need a base in the same container, or
         # the standalone_update flag (record flags, offset 0x19, bit 0).
         has_base = any(p.kind == F.KIND_BASE for p in self.packages)
         for p in self.packages:
@@ -270,11 +270,11 @@ class NupReader:
         return out
 
     def localized_titles(self, pkg: PackageInfo) -> dict[bytes, bytes]:
-        """BCP-47 tag (lowercase bytes) -> UTF-8 title name. SPEC §6.1, TLV 0x0009."""
+        """BCP-47 tag (lowercase bytes) -> UTF-8 title name. SPEC §5.1, TLV 0x0009."""
         return self._localized(pkg, F.TLV_LOCALIZED_TITLES)
 
     def localized_icons(self, pkg: PackageInfo) -> dict[bytes, bytes]:
-        """BCP-47 tag (lowercase bytes) -> image bytes. SPEC §6.1, TLV 0x000A."""
+        """BCP-47 tag (lowercase bytes) -> image bytes. SPEC §5.1, TLV 0x000A."""
         return self._localized(pkg, F.TLV_LOCALIZED_ICONS)
 
     def app_meta(self, pkg: PackageInfo) -> dict[int, bytes]:

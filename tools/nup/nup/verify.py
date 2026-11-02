@@ -32,7 +32,7 @@ def verify(path: str, deep: bool = False) -> tuple[bool, list[str]]:
         if a2 > b1:
             fail(f"child slot ranges overlap: dirs {ai} and {bi}")
 
-    # sorted + unique children per dir (producer conformance §7.2)
+    # sorted + unique children per dir (producer conformance §6.2)
     for di, (name, first, count) in enumerate(r.dirs):
         kids = r.children[first:first + count]
         names = []
