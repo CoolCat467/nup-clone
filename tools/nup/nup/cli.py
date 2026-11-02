@@ -7,6 +7,8 @@ import sys
 import time
 
 from . import format as F
+from .access import app_meta, build_id, extract_tree, find_package, iter_children, \
+    localized_titles, resolve_path
 from .pack import pack
 from .read import NupReader
 from .verify import verify
@@ -55,13 +57,13 @@ def _cmd_pack(args: argparse.Namespace) -> int:
 
 def _print_tree(r: NupReader, dir_index: int, prefix: str, max_depth: int, depth: int = 0,
                 show_files: bool = True) -> None:
-    for child in r.iter_children(dir_index):
+    for child in iter_children(r, dir_index):
         label = child.name.decode("utf-8", "surrogateescape")
         if child.is_dir:
             print(f"{prefix}{label}/")
             if depth + 1 < max_depth:
                 _print_tree(r, child.index, prefix + "  ", max_depth, depth + 1, show_files)
-            elif any(c.is_dir for c in r.iter_children(child.index)):
+            elif any(c.is_dir for c in iter_children(r, child.index)):
                 print(f"{prefix}  ...")
         elif show_files:
             name, size, sha, eoff, esz, codec = r.file_info(child.index)
@@ -81,7 +83,7 @@ def _cmd_info(args: argparse.Namespace) -> int:
         print(f"blobs:     @{s['blob_offset']:#x}")
         print(f"packages:  {len(r.packages)}  (dirs {r.dir_count}, files {r.file_count})")
         for p in r.packages:
-            meta = r.app_meta(p)
+            meta = app_meta(r, p)
             name = meta.get(F.TLV_TITLE_NAME, b"").decode("utf-8", "replace")
             pub = meta.get(F.TLV_PUBLISHER, b"").decode("utf-8", "replace")
             label = f" {name!r}" if name else ""
@@ -91,12 +93,12 @@ def _cmd_info(args: argparse.Namespace) -> int:
                 label += " [standalone]"
             print(f"  [{p.index}] {p.kind_name:<6} {p.title_id:016X} "
                   f"v{p.version} ({p.version_str}){label}")
-            loc = r.localized_titles(p)
+            loc = localized_titles(r, p)
             if loc:
                 langs = ", ".join(f"{l.decode()}={n.decode('utf-8', 'replace')!r}"
                                   for l, n in sorted(loc.items()))
                 print(f"         localized: {langs}")
-            bid = r.build_id(p)
+            bid = build_id(r, p)
             if bid:
                 print(f"         build-id: {bid.rstrip(b'\0').hex().upper()}")
             if not args.tree:
@@ -120,13 +122,13 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_extract(args: argparse.Namespace) -> int:
     with NupReader(args.file) as r:
-        pkg = r.find_package(kind=_kind_arg(args.package)) if args.package else r.packages[0]
+        pkg = find_package(r, kind=_kind_arg(args.package)) if args.package else r.packages[0]
         if pkg is None:
             print(f"extract: no package matches {args.package!r}", file=sys.stderr)
             return 1
         src_dir = pkg.root_dir
         if args.subtree:
-            ref = r.resolve_path(pkg, args.subtree)
+            ref = resolve_path(r, pkg, args.subtree)
             if ref is None:
                 print(f"extract: no such subtree {args.subtree!r}", file=sys.stderr)
                 return 1
@@ -134,7 +136,7 @@ def _cmd_extract(args: argparse.Namespace) -> int:
                 print(f"extract: {args.subtree!r} is a file; use the tree root", file=sys.stderr)
                 return 1
             src_dir = ref.index
-        n = r.extract_tree(args.dest, src_dir)
+        n = extract_tree(r, args.dest, src_dir)
         print(f"extract: {n} files -> {args.dest}")
     return 0
 

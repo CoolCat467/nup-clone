@@ -1,8 +1,9 @@
-"""NUP reader: validated parsing, virtual-tree access, extraction.
+"""NUP reader: validated parsing and integrity checking.
 
 Reader conformance (SPEC §6.1): validate superblock, verify TOC SHA-256
 before trusting TOC-derived values, bounds-check every offset/size, treat
 title_id/version/NPDM/NACP as opaque, reject unknown codecs and flags.
+Tree traversal, metadata access, and extraction live in .access.
 """
 
 from __future__ import annotations
@@ -182,37 +183,12 @@ class NupReader:
                     f"package {p.index}: update without base in container and "
                     f"standalone_update flag not set")
 
-    # ---- tree access ----
+    # ---- member access ----
 
     def node_name(self, ref: NodeRef) -> bytes:
         if ref.is_dir:
             return self.dirs[ref.index][0]
         return self.files[ref.index][0]
-
-    def iter_children(self, dir_index: int) -> list[NodeRef]:
-        _, first, count = self.dirs[dir_index]
-        out = []
-        for slot in range(first, first + count):
-            cid = self.children[slot]
-            if cid >= self.dir_count:
-                fi = cid - self.dir_count
-                out.append(NodeRef(False, fi, self.files[fi][0]))
-            else:
-                out.append(NodeRef(True, cid, self.dirs[cid][0]))
-        return out
-
-    def find_child(self, dir_index: int, name: bytes) -> NodeRef | None:
-        children = self.iter_children(dir_index)
-        lo, hi = 0, len(children)
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if children[mid].name < name:
-                lo = mid + 1
-            else:
-                hi = mid
-        if lo < len(children) and children[lo].name == name:
-            return children[lo]
-        return None
 
     def file_info(self, file_index: int) -> tuple:
         return self.files[file_index]
@@ -237,105 +213,3 @@ class NupReader:
         if len(data) != size:
             raise F.NupError(f"size mismatch for {name!r}: {len(data)} != {size}")
         return data
-
-    def meta_records(self, pkg: PackageInfo) -> list[tuple[int, bytes]]:
-        out = []
-        pos = 0
-        block = self._mm[pkg.meta_offset:pkg.meta_offset + pkg.meta_size]
-        while pos + 8 <= len(block):
-            t, _r, size = F._tlv_s.unpack_from(block, pos)
-            if pos + 8 + size > len(block):
-                raise F.NupError("meta TLV overruns block")
-            out.append((t, bytes(block[pos + 8:pos + 8 + size])))
-            pos += 8 + size
-        return out
-
-    def _localized(self, pkg: PackageInfo, tlv_type: int) -> dict[bytes, bytes]:
-        out: dict[bytes, bytes] = {}
-        for t, payload in self.meta_records(pkg):
-            if t != tlv_type:
-                continue
-            pos = 0
-            while pos < len(payload):
-                lang_len = payload[pos]
-                pos += 1
-                lang = payload[pos:pos + lang_len]
-                pos += lang_len
-                (data_len,) = struct.unpack_from("<I", payload, pos)
-                pos += 4
-                if pos + data_len > len(payload):
-                    raise F.NupError("localized record overruns TLV")
-                out[lang.lower()] = payload[pos:pos + data_len]
-                pos += data_len
-        return out
-
-    def localized_titles(self, pkg: PackageInfo) -> dict[bytes, bytes]:
-        """BCP-47 tag (lowercase bytes) -> UTF-8 title name. SPEC §5.1, TLV 0x0009."""
-        return self._localized(pkg, F.TLV_LOCALIZED_TITLES)
-
-    def localized_icons(self, pkg: PackageInfo) -> dict[bytes, bytes]:
-        """BCP-47 tag (lowercase bytes) -> image bytes. SPEC §5.1, TLV 0x000A."""
-        return self._localized(pkg, F.TLV_LOCALIZED_ICONS)
-
-    def app_meta(self, pkg: PackageInfo) -> dict[int, bytes]:
-        """TLV type -> payload, preferring the base (or first) package's block."""
-        return dict(self.meta_records(pkg))
-
-    def build_id(self, pkg: PackageInfo) -> bytes | None:
-        """32-byte ModuleId from meta TLV 0x0007, or None if absent (SPEC §5).
-
-        Bytes 0x40..0x60 of the package's `main` (NSO0/NRO0 header); only the
-        first 0x14 are significant in SDK-built titles."""
-        payload = self.app_meta(pkg).get(F.TLV_BUILD_ID)
-        if payload is not None and len(payload) != 32:
-            raise F.NupError(f"build ID TLV payload is {len(payload)} bytes, expected 32")
-        return payload
-
-    # ---- convenience ----
-
-    def find_package(self, kind: int | None = None, title_id: int | None = None,
-                     version: int | None = None) -> PackageInfo | None:
-        for p in self.packages:
-            if kind is not None and p.kind != kind:
-                continue
-            if title_id is not None and p.title_id != title_id:
-                continue
-            if version is not None and p.version != version:
-                continue
-            return p
-        return None
-
-    def resolve_path(self, pkg: PackageInfo, relpath: str) -> NodeRef | None:
-        """Resolve a '/'-separated path from the package root."""
-        cur = NodeRef(True, pkg.root_dir, b"")
-        for part in relpath.split("/"):
-            if not part:
-                continue
-            if not cur.is_dir:
-                return None
-            nxt = self.find_child(cur.index, part.encode("utf-8"))
-            if nxt is None:
-                return None
-            cur = nxt
-        return cur
-
-    def extract_tree(self, dest: str, dir_index: int, progress=None) -> int:
-        """Extract a directory subtree to dest. Returns number of files written."""
-        n = 0
-        os.makedirs(dest, exist_ok=True)
-        stack = [(dir_index, dest)]
-        while stack:
-            di, dpath = stack.pop()
-            os.makedirs(dpath, exist_ok=True)
-            for child in self.iter_children(di):
-                cpath = os.path.join(dpath, child.name.decode("utf-8", "surrogateescape"))
-                if child.is_dir:
-                    stack.append((child.index, cpath))
-                else:
-                    data = self.read_file(child.index)
-                    with open(cpath, "wb") as fh:
-                        fh.write(data)
-                    n += 1
-                    if progress:
-                        progress(n, child)
-        return n
