@@ -28,11 +28,16 @@ nup info   <file.nup>            [--tree]
 nup list   <file.nup>
 nup extract <file.nup> <dest>    [--package base|update|addon] [--subtree romfs]
 nup verify <file.nup>            [--fast]
+nup edit   <file.nup>            [--name N] [--publisher P] [--display-version V]
+                                 [--icon PATH] [--lang-name LANG=N] [--lang-icon LANG=P]
+                                 [--package base|update|addon|INDEX] [--clear-*]
 ```
 
 `pack` auto-discovers `base/`, `updates/<version>/`, `dlc/<titleid>/<index>/`; a bare
 content directory (`exefs/`+`romfs/`) packs as a single base package.
 Title IDs come from `main.npdm`; dump-tool `.listing` artifacts are excluded by default.
+`edit` rewrites the metadata tail in place afterwards (names, icons, display version,
+publisher - merge semantics: unspecified metadata is preserved).
 
 ## Layout
 

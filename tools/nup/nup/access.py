@@ -8,10 +8,10 @@ Functions take the reader as their first argument.
 from __future__ import annotations
 
 import os
-import struct
 from typing import TYPE_CHECKING
 
 from . import format as F
+from . import meta as M
 from .read import NodeRef
 
 if TYPE_CHECKING:
@@ -74,20 +74,8 @@ def meta_records(r: NupReader, pkg: PackageInfo) -> list[tuple[int, bytes]]:
 def _localized(r: NupReader, pkg: PackageInfo, tlv_type: int) -> dict[bytes, bytes]:
     out: dict[bytes, bytes] = {}
     for t, payload in meta_records(r, pkg):
-        if t != tlv_type:
-            continue
-        pos = 0
-        while pos < len(payload):
-            lang_len = payload[pos]
-            pos += 1
-            lang = payload[pos:pos + lang_len]
-            pos += lang_len
-            (data_len,) = struct.unpack_from("<I", payload, pos)
-            pos += 4
-            if pos + data_len > len(payload):
-                raise F.NupError("localized record overruns TLV")
-            out[lang.lower()] = payload[pos:pos + data_len]
-            pos += data_len
+        if t == tlv_type:
+            out.update(M.decode_localized(payload))
     return out
 
 

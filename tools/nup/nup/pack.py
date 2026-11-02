@@ -90,13 +90,15 @@ def _write_extents(out, tree: Tree, zc, blob_cursor: int, progress) -> int:
 
 
 def _write_meta_blocks(out, packages: list[PackInput], dump_label: str,
-                       names, icons, display_version, blob_cursor: int):
+                       names, icons, display_version, blob_cursor: int,
+                       publisher=None):
     """Append per-package meta blocks after the blob region.
 
     Returns (meta_offsets, end offset).
     """
     meta_offsets: list[tuple[int, int]] = []
-    app_extra = M.app_meta(names, icons, display_version, dump_label)
+    app_extra = M.app_meta(names, icons, display_version, dump_label,
+                           publisher=publisher)
     app_pkg_idx = next((i for i, p in enumerate(packages) if p.kind == F.KIND_BASE), 0)
     for i, pkg in enumerate(packages):
         block = M.meta_block(pkg, dump_label, app_extra if i == app_pkg_idx else b"")
@@ -146,6 +148,7 @@ def _build_toc(tree: Tree, pkg_records: list[F.Package],
 
 def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False,
          base_title_id: int | None = None, display_version: str | None = None,
+         publisher: str | None = None,
          names: dict[str | None, str] | None = None,
          icons: dict[str | None, str] | None = None,
          progress=None) -> list[PackInput]:
@@ -188,7 +191,8 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
         dump_label = os.path.basename(os.path.normpath(src))
         meta_offsets, blob_cursor = _write_meta_blocks(out, packages, dump_label,
                                                        names, icons, display_version,
-                                                       blob_cursor)
+                                                       blob_cursor,
+                                                       publisher=publisher)
         file_size = blob_cursor
 
         toc = _build_toc(tree, pkg_records, meta_offsets, dir_count, file_count,

@@ -9,6 +9,7 @@ import time
 from . import format as F
 from .access import app_meta, build_id, extract_tree, find_package, iter_children, \
     localized_titles, resolve_path
+from . import edit as edit_cmd
 from .pack import pack
 from .read import NupReader
 from .verify import verify
@@ -44,6 +45,7 @@ def _cmd_pack(args: argparse.Namespace) -> int:
                     keep_listings=args.keep_listings,
                     base_title_id=int(args.title_id, 16) if args.title_id else None,
                     display_version=args.display_version,
+                    publisher=args.publisher,
                     names=_parse_kv_flags(args.name, args.lang_name, "name"),
                     icons=_parse_kv_flags(args.icon, args.lang_icon, "icon"),
                     progress=None if args.quiet else progress)
@@ -174,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--level", type=int, default=3, help="zstd level (default 3)")
     p.add_argument("--title-id", help="override base title ID (16 hex digits)")
     p.add_argument("--display-version", help="store a display version string in meta")
+    p.add_argument("--publisher", help="store a publisher string in meta (TLV 0x0006)")
     p.add_argument("--name", help="game title, default language (TLV 0x0005)")
     p.add_argument("--lang-name", action="append", metavar="LANG=NAME",
                    help="localized title, repeatable, BCP-47 tag (e.g. --lang-name ja=ゼルダ)")
@@ -183,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--keep-listings", action="store_true", help="keep .listing artifacts")
     p.add_argument("-q", "--quiet", action="store_true")
     p.set_defaults(fn=_cmd_pack)
+
+    edit_cmd.register(sub)
 
     p = sub.add_parser("info", help="show container info")
     p.add_argument("file")
