@@ -50,11 +50,17 @@ TLV_LOCALIZED_ICONS = 0x000A
 PKG_FLAG_STANDALONE_UPDATE = 0x01
 
 _super_s = struct.Struct("<4sHHQQ32sQQII16s32s")  # 128
-_pkg_s = struct.Struct("<QIIII BBH QII 24x")  # 64
+_pkg_s = struct.Struct("<QIIIIBBHIQI20x")  # 64
 _dir_s = struct.Struct("<IIIIQ")  # 24
-_file_s = struct.Struct("<IIIQ32sQQ2BH8x")  # 80
+_file_s = struct.Struct("<IIQQQ32sBBH12x")  # 80
 _toc_head_s = struct.Struct("<4sIQQQQQ")  # 48
 _tlv_s = struct.Struct("<HHI")  # 8
+
+# match exactly (SPEC §8);
+assert _super_s.size == HEADER_SIZE
+assert _pkg_s.size == PKG_SIZE
+assert _dir_s.size == DIR_SIZE
+assert _file_s.size == FILE_SIZE
 
 
 class NupError(Exception):
@@ -105,7 +111,7 @@ def pack_super(magic: bytes, header_size: int, header_version: int, toc_offset: 
 
 def pack_pkg(p: Package) -> bytes:
     return _pkg_s.pack(p.title_id, p.root_dir, p.exefs_dir, p.romfs_dir, p.version,
-                       p.kind, p.flags, 0, p.meta_offset, p.meta_size, 0)
+                       p.kind, p.flags, 0, 0, p.meta_offset, p.meta_size)
 
 
 def pack_dir(d: DirNode) -> bytes:
@@ -113,7 +119,7 @@ def pack_dir(d: DirNode) -> bytes:
 
 
 def pack_file(f: FileNode) -> bytes:
-    return _file_s.pack(0, 0, 0, f.size, f.sha256, f.extent_offset, f.extent_size,
+    return _file_s.pack(0, 0, f.size, f.extent_offset, f.extent_size, f.sha256,
                         f.codec, f.codec_flags, 0)
 
 
@@ -139,8 +145,8 @@ def parse_super(buf: bytes) -> dict:
 
 
 def parse_pkg(buf: bytes, off: int) -> Package:
-    (title_id, root, exefs, romfs, version, kind, flags, _r,
-     meta_offset, meta_size, _r2) = _pkg_s.unpack_from(buf, off)
+    (title_id, root, exefs, romfs, version, kind, flags, _r, _r2,
+     meta_offset, meta_size) = _pkg_s.unpack_from(buf, off)
     if kind >= len(KIND_NAMES):
         raise NupError(f"unknown package kind {kind}")
     if _r != 0 or _r2 != 0:

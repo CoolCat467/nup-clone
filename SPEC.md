@@ -102,10 +102,10 @@ struct NupPackage {              // offset  size
     uint8_t  kind;               // 0x18   1   see §4.1.2
     uint8_t  flags;              // 0x19   1   bit0 = standalone_update (§4.1.2); other bits zero for v1
     uint16_t reserved;           // 0x1A   2   zero
-    uint64_t meta_offset;        // 0x1C   8   absolute file offset of meta block, or 0
-    uint32_t meta_size;          // 0x24   4   meta block size in bytes, or 0
-    uint32_t reserved2;          // 0x28   4   zero
-    uint8_t  reserved3[24];      // 0x2C  24   zero
+    uint32_t reserved2;          // 0x1C   4   zero
+    uint64_t meta_offset;        // 0x20   8   absolute file offset of meta block, or 0
+    uint32_t meta_size;          // 0x28   4   meta block size in bytes, or 0
+    uint8_t  reserved3[20];      // 0x2C  20   zero
 };                               // total  0x40
 ```
 
@@ -189,15 +189,14 @@ unique within a directory (case-sensitive).
 struct NupFile {                 // offset  size
     uint32_t name_off;           // 0x00   4   byte offset into string pool
     uint32_t name_len;           // 0x04   4
-    uint8_t  reserved[4];        // 0x08   4   zero
-    uint64_t size;               // 0x0C   8   uncompressed size in bytes
-    uint8_t  sha256[32];         // 0x14  32   SHA-256 of the uncompressed content
-    uint64_t extent_offset;      // 0x34   8   absolute offset of extent in blob region
-    uint64_t extent_size;        // 0x3C   8   stored (compressed) size in bytes
-    uint8_t  codec;              // 0x44   1   0 = raw, 1 = zstd
-    uint8_t  codec_flags;        // 0x45   1   codec-specific, 0 for v1
-    uint16_t reserved2;          // 0x46   2   zero
-    uint8_t  reserved3[8];       // 0x48   8   zero
+    uint64_t size;               // 0x08   8   uncompressed size in bytes
+    uint64_t extent_offset;      // 0x10   8   absolute offset of extent in blob region
+    uint64_t extent_size;        // 0x18   8   stored (compressed) size in bytes
+    uint8_t  sha256[32];         // 0x20  32   SHA-256 of the uncompressed content
+    uint8_t  codec;              // 0x40   1   0 = raw, 1 = zstd
+    uint8_t  codec_flags;        // 0x41   1   codec-specific, 0 for v1
+    uint16_t reserved2;          // 0x42   2   zero
+    uint8_t  reserved3[12];      // 0x44  12   zero
 };                               // total  0x50
 ```
 

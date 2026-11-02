@@ -414,8 +414,8 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
         pos = F._toc_head_s.size
         for rec, (mo, ms) in zip(pkg_records, meta_offsets):
             F._pkg_s.pack_into(toc, pos, rec.title_id, rec.root_dir, rec.exefs_dir,
-                               rec.romfs_dir, rec.version, rec.kind, rec.flags, 0,
-                               mo, ms, 0)
+                               rec.romfs_dir, rec.version, rec.kind, rec.flags, 0, 0,
+                               mo, ms)
             pos += F.PKG_SIZE
         for d in tree.dirs:
             off = tree.intern(d.name)
@@ -424,8 +424,8 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
             pos += F.DIR_SIZE
         for fnode in tree.files:
             off = tree.intern(fnode.name)
-            F._file_s.pack_into(toc, pos, off, len(fnode.name), 0, fnode.size,
-                                fnode.sha256, fnode.extent_offset, fnode.extent_size,
+            F._file_s.pack_into(toc, pos, off, len(fnode.name), fnode.size,
+                                fnode.extent_offset, fnode.extent_size, fnode.sha256,
                                 fnode.codec, fnode.codec_flags, 0)
             pos += F.FILE_SIZE
         for cid in tree.children:

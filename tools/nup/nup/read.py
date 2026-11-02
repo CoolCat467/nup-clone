@@ -121,7 +121,7 @@ class NupReader:
 
         self.files: list[tuple] = []  # (name, size, sha256, ext_off, ext_size, codec)
         for _ in range(file_count):
-            (off, ln, _r3, size, sha, eoff, esz, codec, cflags, _r4) = \
+            (off, ln, size, eoff, esz, sha, codec, cflags, _r4) = \
                 F._file_s.unpack_from(toc, pos)
             pos += F.FILE_SIZE
             if codec not in (F.CODEC_RAW, F.CODEC_ZSTD):
