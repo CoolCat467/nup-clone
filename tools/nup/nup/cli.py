@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 
@@ -124,6 +125,21 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_extract(args: argparse.Namespace) -> int:
     with NupReader(args.file) as r:
+        if args.flat:
+            # Rescue mode: dump the file table directly, ignoring the directory
+            # tree. Recovers content from containers whose children array is
+            # broken (files present but not linked into any directory).
+            os.makedirs(args.dest, exist_ok=True)
+            n = 0
+            for fi in range(r.file_count):
+                name, size, sha, eoff, esz, codec = r.file_info(fi)
+                target = os.path.join(args.dest, f"{fi:05d}_{name.decode('utf-8', 'surrogateescape')}")
+                data = r.read_file(fi)
+                with open(target, "wb") as fh:
+                    fh.write(data)
+                n += 1
+            print(f"extract: {n} files -> {args.dest}")
+            return 0
         pkg = find_package(r, kind=_kind_arg(args.package)) if args.package else r.packages[0]
         if pkg is None:
             print(f"extract: no package matches {args.package!r}", file=sys.stderr)
@@ -204,6 +220,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("dest")
     p.add_argument("--package", help="kind name (base/update/addon) or index")
     p.add_argument("--subtree", help="relative path from package root, e.g. romfs")
+    p.add_argument("--flat", action="store_true",
+                   help="rescue mode: dump the file table directly, ignoring the "
+                        "directory tree (for containers with a broken tree)")
     p.set_defaults(fn=_cmd_extract)
 
     p = sub.add_parser("verify", help="verify integrity (structure + per-file SHA-256)")
