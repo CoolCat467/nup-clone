@@ -66,6 +66,14 @@ def verify(path: str, deep: bool = False) -> tuple[bool, list[str]]:
     if orphans:
         fail(f"{len(orphans)} unreachable dir nodes (orphans)")
 
+    referenced: set[int] = {cid - r.dir_count for cid in r.children if cid >= r.dir_count}
+    unreferenced = set(range(r.file_count)) - referenced
+    if unreferenced:
+        names = [r.files[fi][0] for fi in sorted(unreferenced)[:8]]
+        more = "..." if len(unreferenced) > len(names) else ""
+        fail(f"{len(unreferenced)} file node(s) not referenced by any child slot "
+             f"(unextractable): {[n.decode('utf-8', 'replace') for n in names]}{more}")
+
     if deep:
         seen_extents: dict[tuple[int, int, int], bytes] = {}
         for fi, (name, size, sha, eoff, esz, codec) in enumerate(r.files):
