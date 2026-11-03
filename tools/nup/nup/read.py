@@ -64,8 +64,8 @@ class NupReader:
             raise F.NupError("toc_offset before header end")
         if self.super["blob_offset"] < self.super["toc_offset"] + self.super["toc_size"]:
             raise F.NupError("blob region overlaps TOC")
-        if self.super["toc_size"] % 1 or self.super["blob_offset"] % F.EXTENT_ALIGN:
-            raise F.NupError("misaligned toc/blob offsets")
+        if self.super["blob_offset"] % F.EXTENT_ALIGN:
+            raise F.NupError("blob_offset not 16-byte aligned")
 
         toc_start = self.super["toc_offset"]
         raw_toc = self._mm[toc_start:toc_start + self.super["toc_size"]]

@@ -54,8 +54,10 @@ Validation rules:
 
 1. `magic` is `NUP\x01` (byte 3 is the major version this file obeys).
 2. `header_size >= 0x80`; fields beyond v1's 0x80 (if `header_version > 1`) are ignored.
-3. `toc_offset == header_size`, `toc_size` and `blob_offset` are 16-byte-aligned sizes/offsets,
+3. `toc_offset == header_size`, `blob_offset` is 16-byte-aligned and
    `blob_offset >= toc_offset + toc_size`, `file_size ==` actual stream length.
+   (`toc_size` itself has no alignment requirement - extent alignment is
+   guaranteed by `blob_offset`.)
 4. `SHA-256(TOC bytes)` equals `toc_sha256`.
 5. `package_count >= 1`.
 
