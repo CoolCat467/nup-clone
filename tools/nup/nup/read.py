@@ -51,30 +51,41 @@ class NupReader:
     def __init__(self, path: str) -> None:
         self.path = path
         self._fh = open(path, "rb")
+        self._mm: mmap.mmap | bytes = b""
         try:
-            self._mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
-        except ValueError:  # empty file
-            self._mm = b""
-        self.super = F.parse_super(self._mm[:F.HEADER_SIZE])
-        real_size = os.fstat(self._fh.fileno()).st_size
-        if self.super["file_size"] != real_size:
-            raise F.NupError(
-                f"file_size {self.super['file_size']} != actual {real_size}")
-        if self.super["toc_offset"] < F.HEADER_SIZE:
-            raise F.NupError("toc_offset before header end")
-        if self.super["blob_offset"] < self.super["toc_offset"] + self.super["toc_size"]:
-            raise F.NupError("blob region overlaps TOC")
-        if self.super["blob_offset"] % F.EXTENT_ALIGN:
-            raise F.NupError("blob_offset not 16-byte aligned")
+            try:
+                self._mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
+            except ValueError:  # empty file
+                self._mm = b""
+            self.super = F.parse_super(self._mm[:F.HEADER_SIZE])
+            real_size = os.fstat(self._fh.fileno()).st_size
+            if self.super["file_size"] != real_size:
+                raise F.NupError(
+                    f"file_size {self.super['file_size']} != actual {real_size}")
+            if self.super["toc_offset"] < F.HEADER_SIZE:
+                raise F.NupError("toc_offset before header end")
+            if self.super["blob_offset"] < self.super["toc_offset"] + self.super["toc_size"]:
+                raise F.NupError("blob region overlaps TOC")
+            if self.super["blob_offset"] % F.EXTENT_ALIGN:
+                raise F.NupError("blob_offset not 16-byte aligned")
 
-        toc_start = self.super["toc_offset"]
-        raw_toc = self._mm[toc_start:toc_start + self.super["toc_size"]]
-        if hashlib.sha256(raw_toc).digest() != self.super["toc_sha256"]:
-            raise F.NupError("TOC SHA-256 mismatch - file corrupt or tampered")
-        self._parse_toc(raw_toc)
-        self._check_bounds()
+            toc_start = self.super["toc_offset"]
+            raw_toc = self._mm[toc_start:toc_start + self.super["toc_size"]]
+            if hashlib.sha256(raw_toc).digest() != self.super["toc_sha256"]:
+                raise F.NupError("TOC SHA-256 mismatch - file corrupt or tampered")
+            self._parse_toc(raw_toc)
+            self._check_bounds()
+        except BaseException:
+            # Never leak an open handle/mmap: on Windows it locks the file
+            # against rename/delete until GC.
+            self.close()
+            raise
 
     def close(self) -> None:
+        mm = self._mm
+        if isinstance(mm, mmap.mmap):
+            mm.close()
+        self._mm = b""
         self._fh.close()
 
     def __enter__(self) -> "NupReader":

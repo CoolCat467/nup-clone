@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import time
 
 from . import format as F
 from . import meta as M
@@ -54,6 +55,20 @@ def _resolve_package(r: NupReader, package: str | None) -> PackageInfo:
     return next((p for p in r.packages if p.kind == F.KIND_BASE), r.packages[0])
 
 
+def _replace_retry(tmp: str, path: str, attempts: int = 6) -> None:
+    """os.replace can transiently fail with PermissionError on Windows when
+    another process (antivirus, indexer, cloud sync) still holds the
+    destination - back off and retry instead of failing the whole edit."""
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.25 * (attempt + 1))
+
+
 def edit(path: str, *, package: str | None = None, name: str | None = None,
          publisher: str | None = None, display_version: str | None = None,
          icon: str | None = None, lang_names: dict[str, str] | None = None,
@@ -61,65 +76,77 @@ def edit(path: str, *, package: str | None = None, name: str | None = None,
          clear_publisher: bool = False, clear_display_version: bool = False,
          clear_icon: bool = False) -> PackageInfo:
     """Edit one package's meta block in place. Returns the edited package."""
-    r = NupReader(path)  # full validation before anything is written
+    tmp = path + ".tmp"
     try:
-        target = _resolve_package(r, package)
-        records = [M.parse_block(_old_block(r, p)) for p in r.packages]
-        idx = r.packages.index(target)
-        records[idx] = M.merge_app_meta(
-            records[idx], name=name, publisher=publisher,
-            display_version=display_version, icon=icon, lang_names=lang_names,
-            lang_icons=lang_icons, clear_name=clear_name,
-            clear_publisher=clear_publisher,
-            clear_display_version=clear_display_version, clear_icon=clear_icon)
+        r = NupReader(path)  # full validation before anything is written
+        try:
+            target = _resolve_package(r, package)
+            records = [M.parse_block(_old_block(r, p)) for p in r.packages]
+            idx = r.packages.index(target)
+            records[idx] = M.merge_app_meta(
+                records[idx], name=name, publisher=publisher,
+                display_version=display_version, icon=icon, lang_names=lang_names,
+                lang_icons=lang_icons, clear_name=clear_name,
+                clear_publisher=clear_publisher,
+                clear_display_version=clear_display_version, clear_icon=clear_icon)
 
-        serialized = [M.serialize_block(recs) for recs in records]
-        new_tail = b"".join(serialized)
+            serialized = [M.serialize_block(recs) for recs in records]
+            new_tail = b"".join(serialized)
 
-        # end of the blob region = first meta block (only extents before it)
-        meta_starts = [p.meta_offset for p in r.packages if p.meta_size]
-        blob_end = min(meta_starts) if meta_starts else r.super["file_size"]
+            # end of the blob region = first meta block (only extents before it)
+            meta_starts = [p.meta_offset for p in r.packages if p.meta_size]
+            blob_end = min(meta_starts) if meta_starts else r.super["file_size"]
 
-        new_offsets: list[tuple[int, int]] = []
-        cursor = blob_end
-        for block in serialized:
-            if block:
-                new_offsets.append((cursor, len(block)))
-                cursor += len(block)
-            else:
-                new_offsets.append((0, 0))  # no meta block for this package
-        new_file_size = cursor
+            new_offsets: list[tuple[int, int]] = []
+            cursor = blob_end
+            for block in serialized:
+                if block:
+                    new_offsets.append((cursor, len(block)))
+                    cursor += len(block)
+                else:
+                    new_offsets.append((0, 0))  # no meta block for this package
+            new_file_size = cursor
 
-        s = r.super
-        toc = bytearray(r._mm[s["toc_offset"]:s["toc_offset"] + s["toc_size"]])
-        pos = F._toc_head_s.size
-        for i, p in enumerate(r.packages):
-            mo, ms = new_offsets[i]
-            F._pkg_s.pack_into(toc, pos, p.title_id, p.root_dir, p.exefs_dir,
-                               p.romfs_dir, p.version, p.kind, p.flags, 0, 0, mo, ms)
-            pos += F.PKG_SIZE
+            s = r.super
+            toc = bytearray(r._mm[s["toc_offset"]:s["toc_offset"] + s["toc_size"]])
+            pos = F._toc_head_s.size
+            for i, p in enumerate(r.packages):
+                mo, ms = new_offsets[i]
+                F._pkg_s.pack_into(toc, pos, p.title_id, p.root_dir, p.exefs_dir,
+                                   p.romfs_dir, p.version, p.kind, p.flags, 0, 0, mo, ms)
+                pos += F.PKG_SIZE
 
-        toc_sha = hashlib.sha256(toc).digest()
-        superblock = F.pack_super(F.MAGIC, s["header_size"], s["header_version"],
-                                  s["toc_offset"], s["toc_size"], toc_sha,
-                                  s["blob_offset"], new_file_size,
-                                  len(r.packages), s["flags"], s["uuid"])
+            toc_sha = hashlib.sha256(toc).digest()
+            superblock = F.pack_super(F.MAGIC, s["header_size"], s["header_version"],
+                                      s["toc_offset"], s["toc_size"], toc_sha,
+                                      s["blob_offset"], new_file_size,
+                                      len(r.packages), s["flags"], s["uuid"])
 
-        tmp = path + ".tmp"
-        with open(tmp, "wb") as out:
-            out.write(superblock)
-            out.write(toc)
-            copy_pos = s["toc_offset"] + s["toc_size"]
-            while copy_pos < blob_end:
-                chunk = r._mm[copy_pos:min(copy_pos + _COPY_CHUNK, blob_end)]
-                out.write(chunk)
-                copy_pos += len(chunk)
-            out.write(new_tail)
-        NupReader(tmp)  # structural validation of the result
-        os.replace(tmp, path)
+            with open(tmp, "wb") as out:
+                out.write(superblock)
+                out.write(toc)
+                copy_pos = s["toc_offset"] + s["toc_size"]
+                while copy_pos < blob_end:
+                    chunk = r._mm[copy_pos:min(copy_pos + _COPY_CHUNK, blob_end)]
+                    out.write(chunk)
+                    copy_pos += len(chunk)
+                out.write(new_tail)
+        finally:
+            # Release the original (file handle and mmap) before replacing it:
+            # on Windows a rename over a still-open file fails with
+            # PermissionError (WinError 5).
+            r.close()
+
+        with NupReader(tmp):  # structural validation of the result
+            pass
+        _replace_retry(tmp, path)
         return target
-    finally:
-        r.close()
+    except BaseException:
+        try:
+            os.unlink(tmp)  # keep the original, drop the partial result
+        except OSError:
+            pass
+        raise
 
 
 def _parse_langs(items: list[str] | None, what: str) -> dict[str, str]:

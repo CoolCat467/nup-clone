@@ -94,15 +94,21 @@ def _cmd_info(args: argparse.Namespace) -> int:
                 label += f" by {pub!r}"
             if p.kind == F.KIND_UPDATE and (p.flags & F.PKG_FLAG_STANDALONE_UPDATE):
                 label += " [standalone]"
-            # The raw NCM version only decodes to major.minor.micro on Switch 1;
-            # Switch 2 titles store a different scheme there, so show the display
-            # version TLV as the truth and treat the decoded form as what it is.
+            # Version reporting: the display version TLV is the truth. The raw
+            # NCM value decodes to major.minor.micro only on Switch 1; Switch 2
+            # titles store a per-title content revision counter there (one
+            # 0x10000 step per released update), so label revision-aligned
+            # values as revisions instead of pretending the decode is a version.
             disp = meta.get(F.TLV_DISPLAY_VERSION, b"").decode("utf-8", "replace")
-            ver = f"v{p.version:#x}"
             if disp:
-                ver += f" (display {disp})"
+                ver = f"display {disp} (NCM v{p.version:#x})"
+            elif p.version == 0:
+                ver = "no version stored"
+            elif p.version & 0xFFFF == 0:
+                ver = f"content revision {p.version >> 16} (NCM v{p.version:#x}; " \
+                      f"S1-style decode {p.version_str}, display unknown)"
             else:
-                ver += f" (NCM-decoded {p.version_str})"
+                ver = f"{p.version_str} (NCM v{p.version:#x})"
             print(f"  [{p.index}] {p.kind_name:<6} {p.title_id:016X} {ver}{label}")
             loc = localized_titles(r, p)
             if loc:
