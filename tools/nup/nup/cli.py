@@ -94,8 +94,16 @@ def _cmd_info(args: argparse.Namespace) -> int:
                 label += f" by {pub!r}"
             if p.kind == F.KIND_UPDATE and (p.flags & F.PKG_FLAG_STANDALONE_UPDATE):
                 label += " [standalone]"
-            print(f"  [{p.index}] {p.kind_name:<6} {p.title_id:016X} "
-                  f"v{p.version} ({p.version_str}){label}")
+            # The raw NCM version only decodes to major.minor.micro on Switch 1;
+            # Switch 2 titles store a different scheme there, so show the display
+            # version TLV as the truth and treat the decoded form as what it is.
+            disp = meta.get(F.TLV_DISPLAY_VERSION, b"").decode("utf-8", "replace")
+            ver = f"v{p.version:#x}"
+            if disp:
+                ver += f" (display {disp})"
+            else:
+                ver += f" (NCM-decoded {p.version_str})"
+            print(f"  [{p.index}] {p.kind_name:<6} {p.title_id:016X} {ver}{label}")
             loc = localized_titles(r, p)
             if loc:
                 langs = ", ".join(f"{l.decode()}={n.decode('utf-8', 'replace')!r}"
