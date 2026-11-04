@@ -8,20 +8,24 @@ Tree traversal, metadata access, and extraction live in .access.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import mmap
 import os
 import struct
-from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from . import format as F
 
+if TYPE_CHECKING:
+    from types import TracebackType
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, slots=True)
 class PackageInfo:
     index: int
     title_id: int
-    kind: int
+    kind: F.Kind
     version: int
     flags: int
     root_dir: int
@@ -39,7 +43,7 @@ class PackageInfo:
         return f"{self.version >> 16}.{(self.version >> 8) & 0xFF}.{self.version & 0xFF}"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class NodeRef:
     """A child reference: is_dir + index into the respective array."""
     is_dir: bool
@@ -48,6 +52,7 @@ class NodeRef:
 
 
 class NupReader:
+    __slots__ = ("path", "_fh", "_mm", "super", "dir_count", "file_count", "pool", "packages", "files", "dirs", "children")
     def __init__(self, path: str) -> None:
         self.path = path
         self._fh = open(path, "rb")
@@ -91,7 +96,12 @@ class NupReader:
     def __enter__(self) -> "NupReader":
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         self.close()
 
     # ---- TOC parsing ----
@@ -120,7 +130,7 @@ class NupReader:
             p = F.parse_pkg(toc, pos)
             pos += F.PKG_SIZE
             self.packages.append(PackageInfo(
-                index=i, title_id=p.title_id, kind=p.kind, version=p.version,
+                index=i, title_id=p.title_id, kind=F.Kind(p.kind), version=p.version,
                 flags=p.flags, root_dir=p.root_dir, exefs_dir=p.exefs_dir,
                 romfs_dir=p.romfs_dir, meta_offset=p.meta_offset,
                 meta_size=p.meta_size))
@@ -131,19 +141,11 @@ class NupReader:
             pos += F.DIR_SIZE
             self.dirs.append((self._pool_str(off, ln), first, count))
 
-        self.files: list[tuple] = []  # (name, size, sha256, ext_off, ext_size, codec)
+        # (name, size, sha256, ext_off, ext_size, codec)
+        self.files: list[tuple[bytes, int, bytes, int, int, F.Codec]] = []  
         for _ in range(file_count):
-            (off, ln, size, eoff, esz, sha, codec, cflags, _r4) = \
-                F._file_s.unpack_from(toc, pos)
+            (off, ln), size, sha, eoff, esz, codec = F.parse_file(toc, pos)
             pos += F.FILE_SIZE
-            if codec not in (F.CODEC_RAW, F.CODEC_ZSTD):
-                raise F.NupError(f"unknown extent codec {codec}")
-            if cflags != 0:
-                raise F.NupError(f"unknown codec_flags {cflags}")
-            if size == 0 and (eoff != 0 or esz != 0 or codec != F.CODEC_RAW):
-                raise F.NupError("zero-size file with nonempty extent")
-            if size != 0 and esz == 0:
-                raise F.NupError(f"file with nonzero size but empty extent")
             self.files.append((self._pool_str(off, ln), size, sha, eoff, esz, codec))
 
         slot_end = pool_off
@@ -201,7 +203,7 @@ class NupReader:
             return self.dirs[ref.index][0]
         return self.files[ref.index][0]
 
-    def file_info(self, file_index: int) -> tuple:
+    def file_info(self, file_index: int) -> tuple[bytes, int, bytes, int, int, F.Codec]:
         return self.files[file_index]
 
     def read_file(self, file_index: int) -> bytes:
@@ -221,6 +223,7 @@ class NupReader:
             data = dctx.decompress(comp, max_output_size=size)
         else:
             raise F.NupError(f"unknown codec {codec}")
+        assert len(F.Codec) == 2
         if len(data) != size:
             raise F.NupError(f"size mismatch for {name!r}: {len(data)} != {size}")
         return data

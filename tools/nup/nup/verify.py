@@ -51,8 +51,8 @@ def verify(path: str, deep: bool = False) -> tuple[bool, list[str]]:
     for p in r.packages:
         stack: list[tuple[int, tuple[int, ...]]] = [(p.root_dir, (p.root_dir,))]
         while stack:
-            di, path = stack.pop()
-            if di in path[:-1]:
+            di, path_ids = stack.pop()
+            if di in path_ids[:-1]:
                 fail(f"cycle detected through dir {di}")
                 continue
             if di in visited:
@@ -61,7 +61,7 @@ def verify(path: str, deep: bool = False) -> tuple[bool, list[str]]:
             _, first, count = r.dirs[di]
             for cid in r.children[first:first + count]:
                 if cid < r.dir_count:
-                    stack.append((cid, path + (cid,)))
+                    stack.append((cid, path_ids + (cid,)))
     orphans = set(range(r.dir_count)) - visited
     if orphans:
         fail(f"{len(orphans)} unreachable dir nodes (orphans)")

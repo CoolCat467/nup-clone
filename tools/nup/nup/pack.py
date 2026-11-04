@@ -14,15 +14,21 @@ import hashlib
 import os
 import struct
 import sys
+from typing import IO, TYPE_CHECKING, TypedDict, NotRequired
 
 try:
     import zstandard
 except ImportError:  # pragma: no cover
-    zstandard = None
+    zstandard = None  # type: ignore[assignment]
 
 from . import format as F
 from . import meta as M
 from .discover import ARTIFACT_NAMES, DirObj, FILE_TAG, PackInput, Tree, discover
+
+if TYPE_CHECKING:
+    from .discover import FileObj
+
+    from collections.abc import Callable
 
 
 def have_zstd() -> bool:
@@ -76,7 +82,13 @@ STREAM_THRESHOLD = 256 << 20  # files above this are streamed, not held in RAM
 _STREAM_CHUNK = 4 << 20
 
 
-def _write_extents(out, tree: Tree, zc, blob_cursor: int, progress) -> int:
+def _write_extents(
+    out: IO[bytes],
+    tree: Tree,
+    zc: zstandard.ZstdCompressor | None,
+    blob_cursor: int,
+    progress: Callable[[int, int, FileObj], None] | None = None,
+) -> int:
     """Append file extents (dedup by hash, 16-byte aligned). Returns end offset."""
     total = len(tree.files)
     seen: dict[bytes, tuple[int, int, int]] = {}  # sha256 -> (offset, size, codec)
@@ -99,7 +111,8 @@ def _write_extents(out, tree: Tree, zc, blob_cursor: int, progress) -> int:
             hit = seen.get(fnode.sha256)
             if hit is not None and fnode.size > 0:
                 # Dedup (SPEC §3.6): identical content shares one extent.
-                fnode.extent_offset, fnode.extent_size, fnode.codec = hit
+                fnode.extent_offset, fnode.extent_size, codec = hit
+                fnode.codec = F.Codec(codec)
             elif fnode.size == 0:
                 fnode.extent_offset, fnode.extent_size, fnode.codec = 0, 0, F.CODEC_RAW
             else:
@@ -177,9 +190,16 @@ def _write_extents(out, tree: Tree, zc, blob_cursor: int, progress) -> int:
     return blob_cursor
 
 
-def _write_meta_blocks(out, packages: list[PackInput], dump_label: str,
-                       names, icons, display_version, blob_cursor: int,
-                       publisher=None):
+def _write_meta_blocks(
+    out: IO[bytes],
+    packages: list[PackInput],
+    dump_label: str,
+    names: dict[str | None, str] | None,
+    icons: dict[str | None, str] | None,
+    display_version: str | None,
+    blob_cursor: int,
+    publisher: str | None = None,
+) -> tuple[list[tuple[int, int]], int]:
     """Append per-package meta blocks after the blob region.
 
     Returns (meta_offsets, end offset).
@@ -234,8 +254,10 @@ def _build_toc(tree: Tree, pkg_records: list[F.Package],
     return toc
 
 
-def _split_groups(out_path: str,
-                  packages: list[PackInput]) -> list[tuple[str, list[PackInput]]]:
+def _split_groups(
+    out_path: str,
+    packages: list[PackInput],
+) -> list[tuple[str, list[PackInput]]]:
     """Split mode: one container per package group, so the base boots on its
     own and updates/DLC are separate files the user can swap or drop.
     Naming: <stem>.nup (base), <stem>.update.<version>.nup, <stem>.dlc.nup."""
@@ -253,13 +275,27 @@ def _split_groups(out_path: str,
     return groups
 
 
-def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False,
-         base_title_id: int | None = None, display_version: str | None = None,
-         publisher: str | None = None,
-         names: dict[str | None, str] | None = None,
-         icons: dict[str | None, str] | None = None,
-         split: bool = False,
-         progress=None) -> list[PackInput]:
+class PackMeta(TypedDict):
+    names: NotRequired[dict[str | None, str] | None]
+    icons: NotRequired[dict[str | None, str] | None]
+    display_version: NotRequired[str | None]
+    publisher: NotRequired[str | None]
+    
+
+def pack(
+    out_path: str,
+    src: str,
+    *,
+    level: int = 3,
+    keep_listings: bool = False,
+    base_title_id: int | None = None,
+    display_version: str | None = None,
+    publisher: str | None = None,
+    names: dict[str | None, str] | None = None,
+    icons: dict[str | None, str] | None = None,
+    split: bool = False,
+    progress: Callable[[int, int, FileObj], None] | None = None,
+) -> list[PackInput]:
     if not have_zstd():
         print("pack: warning: zstandard not installed; writing raw (uncompressed) extents",
               file=sys.stderr)
@@ -278,22 +314,35 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
     # App-level metadata (names, icons, versions) describes the base game:
     # only the base container carries it. Update/DLC containers hold their
     # own NPDM and provenance.
-    app_metadata = dict(names=names, icons=icons, display_version=display_version,
-                        publisher=publisher)
+    app_metadata = PackMeta(names=names, icons=icons, display_version=display_version,
+                            publisher=publisher)
     for group_path, group in groups:
         meta = app_metadata if any(p.kind == F.KIND_BASE for p in group) else {}
-        _pack_container(group_path, src, group, level=level,
-                        keep_listings=keep_listings, progress=progress, **meta)
+        _pack_container(
+            group_path,
+            src,
+            group,
+            level=level,
+            keep_listings=keep_listings,
+            progress=progress,
+            **meta,
+        )
     return packages
 
 
-def _pack_container(out_path: str, src: str, packages: list[PackInput], *,
-                    level: int = 3, keep_listings: bool = False,
-                    display_version: str | None = None,
-                    publisher: str | None = None,
-                    names: dict[str | None, str] | None = None,
-                    icons: dict[str | None, str] | None = None,
-                    progress=None) -> list[PackInput]:
+def _pack_container(
+    out_path: str,
+    src: str,
+    packages: list[PackInput],
+    *,
+    level: int = 3,
+    keep_listings: bool = False,
+    display_version: str | None = None,
+    publisher: str | None = None,
+    names: dict[str | None, str] | None = None,
+    icons: dict[str | None, str] | None = None,
+    progress: Callable[[int, int, FileObj], None] | None = None,
+) -> list[PackInput]:
     if os.path.exists(out_path):
         raise SystemExit(f"pack: refusing to overwrite {out_path}")
 

@@ -15,14 +15,15 @@ import argparse
 import hashlib
 import os
 import time
+from typing import Final
 
 from . import format as F
 from . import meta as M
 from .read import NupReader, PackageInfo
 
-APP_TLVS = (F.TLV_TITLE_NAME, F.TLV_PUBLISHER, F.TLV_DISPLAY_VERSION,
-            F.TLV_ICON, F.TLV_LOCALIZED_TITLES, F.TLV_LOCALIZED_ICONS)
-_COPY_CHUNK = 4 << 20
+APP_TLVS: Final = (F.TLV_TITLE_NAME, F.TLV_PUBLISHER, F.TLV_DISPLAY_VERSION,
+                   F.TLV_ICON, F.TLV_LOCALIZED_TITLES, F.TLV_LOCALIZED_ICONS)
+_COPY_CHUNK: Final = 4 << 20
 
 
 def _old_block(r: NupReader, pkg: PackageInfo) -> bytes:
@@ -178,7 +179,7 @@ def cmd(args: argparse.Namespace) -> int:
     return 0
 
 
-def register(sub) -> None:
+def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Wire the `edit` subcommand into the CLI."""
     p = sub.add_parser("edit", help="edit package metadata in an existing .nup")
     p.add_argument("file")

@@ -17,9 +17,15 @@ from .read import NodeRef
 if TYPE_CHECKING:
     from .read import NupReader, PackageInfo
 
+    from collections.abc import Callable
 
-def find_package(r: NupReader, kind: int | None = None, title_id: int | None = None,
-                 version: int | None = None) -> PackageInfo | None:
+
+def find_package(
+    r: NupReader,
+    kind: int | None = None,
+    title_id: int | None = None,
+    version: int | None = None,
+) -> PackageInfo | None:
     for p in r.packages:
         if kind is not None and p.kind != kind:
             continue
@@ -120,7 +126,12 @@ def resolve_path(r: NupReader, pkg: PackageInfo, relpath: str) -> NodeRef | None
     return cur
 
 
-def extract_tree(r: NupReader, dest: str, dir_index: int, progress=None) -> int:
+def extract_tree(
+    r: NupReader,
+    dest: str,
+    dir_index: int,
+    progress: Callable[[int, NodeRef], None] | None = None,
+) -> int:
     """Extract a directory subtree to dest. Returns number of files written."""
     n = 0
     os.makedirs(dest, exist_ok=True)
