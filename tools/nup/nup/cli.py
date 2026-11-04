@@ -49,6 +49,7 @@ def _cmd_pack(args: argparse.Namespace) -> int:
                     publisher=args.publisher,
                     names=_parse_kv_flags(args.name, args.lang_name, "name"),
                     icons=_parse_kv_flags(args.icon, args.lang_icon, "icon"),
+                    split=args.split,
                     progress=None if args.quiet else progress)
     if not args.quiet:
         print()
@@ -214,6 +215,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--lang-icon", action="append", metavar="LANG=PATH",
                    help="localized icon, repeatable (e.g. --lang-icon ja=icon_ja.dat)")
     p.add_argument("--keep-listings", action="store_true", help="keep .listing artifacts")
+    p.add_argument("--split", action="store_true",
+                   help="write one .nup per package group instead of a single container: "
+                        "base (boots alone), one per update (swap/downgrade by file), dlc")
     p.add_argument("-q", "--quiet", action="store_true")
     p.set_defaults(fn=_cmd_pack)
 

@@ -234,20 +234,77 @@ def _build_toc(tree: Tree, pkg_records: list[F.Package],
     return toc
 
 
+def _split_groups(out_path: str,
+                  packages: list[PackInput]) -> list[tuple[str, list[PackInput]]]:
+    """Split mode: one container per package group, so the base boots on its
+    own and updates/DLC are separate files the user can swap or drop.
+    Naming: <stem>.nup (base), <stem>.update.<version>.nup, <stem>.dlc.nup."""
+    stem = out_path[:-4] if out_path.endswith(".nup") else out_path
+    groups: list[tuple[str, list[PackInput]]] = []
+    base = [p for p in packages if p.kind == F.KIND_BASE]
+    if base:
+        groups.append((out_path, base))
+    for p in packages:
+        if p.kind == F.KIND_UPDATE:
+            groups.append((f"{stem}.update.{p.version}.nup", [p]))
+    addons = [p for p in packages if p.kind == F.KIND_ADDON]
+    if addons:
+        groups.append((f"{stem}.dlc.nup", addons))
+    return groups
+
+
 def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False,
          base_title_id: int | None = None, display_version: str | None = None,
          publisher: str | None = None,
          names: dict[str | None, str] | None = None,
          icons: dict[str | None, str] | None = None,
+         split: bool = False,
          progress=None) -> list[PackInput]:
-    if os.path.exists(out_path):
-        raise SystemExit(f"pack: refusing to overwrite {out_path}")
     if not have_zstd():
         print("pack: warning: zstandard not installed; writing raw (uncompressed) extents",
               file=sys.stderr)
 
-    artifacts = set() if keep_listings else ARTIFACT_NAMES
     packages = discover(src, base_title_id)
+
+    if split:
+        groups = _split_groups(out_path, packages)
+    else:
+        groups = [(out_path, packages)]
+
+    for group_path, _ in groups:
+        if os.path.exists(group_path):
+            raise SystemExit(f"pack: refusing to overwrite {group_path}")
+
+    # App-level metadata (names, icons, versions) describes the base game:
+    # only the base container carries it. Update/DLC containers hold their
+    # own NPDM and provenance.
+    app_metadata = dict(names=names, icons=icons, display_version=display_version,
+                        publisher=publisher)
+    for group_path, group in groups:
+        meta = app_metadata if any(p.kind == F.KIND_BASE for p in group) else {}
+        _pack_container(group_path, src, group, level=level,
+                        keep_listings=keep_listings, progress=progress, **meta)
+    return packages
+
+
+def _pack_container(out_path: str, src: str, packages: list[PackInput], *,
+                    level: int = 3, keep_listings: bool = False,
+                    display_version: str | None = None,
+                    publisher: str | None = None,
+                    names: dict[str | None, str] | None = None,
+                    icons: dict[str | None, str] | None = None,
+                    progress=None) -> list[PackInput]:
+    if os.path.exists(out_path):
+        raise SystemExit(f"pack: refusing to overwrite {out_path}")
+
+    # SPEC §3.1.2: an update package in a container without its base must be
+    # flagged standalone_update - split update containers are exactly that.
+    if not any(p.kind == F.KIND_BASE for p in packages):
+        for p in packages:
+            if p.kind == F.KIND_UPDATE:
+                p.flags |= F.PKG_FLAG_STANDALONE_UPDATE
+
+    artifacts = set() if keep_listings else ARTIFACT_NAMES
     tree = Tree(artifacts)
     roots = [tree.add_tree(pkg.src) for pkg in packages]
     tree.assign(roots)
