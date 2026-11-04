@@ -30,17 +30,35 @@ def have_zstd() -> bool:
 
 
 def _locate_content_dirs(packages: list[PackInput],
-                         roots: list[DirObj]) -> list[F.Package]:
-    """Package records; exefs/romfs located from root children by name."""
+                         roots: list[DirObj],
+                         tree: Tree) -> list[F.Package]:
+    """Package records; exefs/romfs located from root children by name.
+
+    An exefs/ or romfs/ folder with no file inside it is not content: its
+    record field is left unset (NoDir) so consumers never resolve the
+    package to an unusable empty directory (SPEC §3.1.3: content is
+    resolved through the record fields, never by folder name)."""
+    file_counts = [0] * len(tree.dirs)
+    for i in reversed(range(len(tree.dirs))):
+        d = tree.dirs[i]
+        total = 0
+        for slot in range(d.first_child, d.first_child + d.child_count):
+            cid = tree.children[slot]
+            if cid & FILE_TAG:
+                total += 1
+            else:
+                total += file_counts[cid]
+        file_counts[i] = total
+
     pkg_records: list[F.Package] = []
     for pkg, root in zip(packages, roots):
         rec = F.Package(title_id=pkg.title_id, root_dir=root.id, version=pkg.version,
                         kind=pkg.kind, flags=pkg.flags)
         for child in root.children:
             if isinstance(child, DirObj):
-                if child.name == b"exefs":
+                if child.name == b"exefs" and file_counts[child.id]:
                     rec.exefs_dir = child.id
-                elif child.name == b"romfs":
+                elif child.name == b"romfs" and file_counts[child.id]:
                     rec.romfs_dir = child.id
         pkg_records.append(rec)
     return pkg_records
@@ -244,7 +262,7 @@ def pack(out_path: str, src: str, *, level: int = 3, keep_listings: bool = False
     for fnode in tree.files:
         tree.intern(fnode.name)
 
-    pkg_records = _locate_content_dirs(packages, roots)
+    pkg_records = _locate_content_dirs(packages, roots, tree)
     uuid = _derive_uuid(pkg_records)
 
     # ---- TOC plan ----

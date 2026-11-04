@@ -113,12 +113,24 @@ def _looks_like_content(d: str) -> bool:
     return os.path.isdir(os.path.join(d, "exefs")) or os.path.isdir(os.path.join(d, "romfs"))
 
 
+def _has_files(d: str) -> bool:
+    """True when a package dir contains at least one packable file. Dump-tool
+    artifacts don't count, and neither do folders that only hold empty dirs -
+    an exefs/ folder with no files is not a usable ExeFS, and a package whose
+    record points at one misleads consumers (they treat it as the ExeFS)."""
+    for _, _, filenames in os.walk(d):
+        for name in filenames:
+            if name != ".listing":
+                return True
+    return False
+
+
 def _collect_updates(upd_dir: str, base_title_id: int, flags: int) -> list[PackInput]:
     """updates/<decimal version>/ content dirs; flags propagates standalone_update."""
     out: list[PackInput] = []
     for name in sorted(os.listdir(upd_dir)):
         p = os.path.join(upd_dir, name)
-        if not _DEC.match(name) or not os.path.isdir(p) or not _looks_like_content(p):
+        if not _DEC.match(name) or not os.path.isdir(p) or not _has_files(p):
             continue
         upd = PackInput(F.KIND_UPDATE, p, version=int(name, 10), flags=flags)
         _resolve_title_id(upd, None)
@@ -137,7 +149,7 @@ def _collect_dlcs(dlc_dir: str) -> list[PackInput]:
             continue
         for idx in sorted(os.listdir(tdir)):
             cdir = os.path.join(tdir, idx)
-            if os.path.isdir(cdir) and _looks_like_content(cdir):
+            if os.path.isdir(cdir) and _has_files(cdir):
                 out.append(PackInput(F.KIND_ADDON, cdir, title_id=int(name, 16)))
     return out
 
@@ -151,9 +163,17 @@ def discover(src: str, base_title_id: int | None) -> list[PackInput]:
     if os.path.isdir(os.path.join(src, "base")):
         base = PackInput(F.KIND_BASE, os.path.join(src, "base"))
         _resolve_title_id(base, base_title_id)
-        packages.append(base)
-        if has_updates:
+        if _has_files(base.src):
+            packages.append(base)
+        else:
+            # an empty base/ is not a game: drop it so a real update can boot
+            # as the standalone program instead of hiding behind a dead base
+            base = None
+        if base is not None and has_updates:
             packages.extend(_collect_updates(upd_dir, base.title_id, flags=0))
+        elif has_updates and base is None:
+            packages.extend(_collect_updates(upd_dir, base_title_id or 0,
+                                             flags=F.PKG_FLAG_STANDALONE_UPDATE))
         dlc_dir = os.path.join(src, "dlc")
         if os.path.isdir(dlc_dir):
             packages.extend(_collect_dlcs(dlc_dir))
