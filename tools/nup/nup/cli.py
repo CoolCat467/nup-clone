@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 import time
+from typing import TYPE_CHECKING 
 
 from . import format as F
 from .access import app_meta, build_id, extract_tree, find_package, iter_children, \
@@ -14,6 +15,10 @@ from . import edit as edit_cmd
 from .pack import pack
 from .read import NupReader
 from .verify import verify
+
+if TYPE_CHECKING:
+    from .discover import FileObj
+    from .read import NodeRef
 
 
 def _parse_kv_flags(default: str | None, lang_flags: list[str], what: str
@@ -32,9 +37,9 @@ def _parse_kv_flags(default: str | None, lang_flags: list[str], what: str
 
 def _cmd_pack(args: argparse.Namespace) -> int:
     t0 = time.time()
-    last = [0]
+    last = [0.0]
 
-    def progress(done: int, total: int, fnode) -> None:
+    def progress(done: int, total: int, fnode: NodeRef | FileObj) -> None:
         now = time.time()
         if now - last[0] >= 0.5 or done == total:
             last[0] = now
@@ -251,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = ap.parse_args(argv)
     try:
-        return args.fn(args)
+        return int(args.fn(args))
     except F.NupError as e:
         print(f"nup: error: {e}", file=sys.stderr)
         return 2

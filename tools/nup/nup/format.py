@@ -6,28 +6,43 @@ fields must be zero on write and are validated on read.
 
 from __future__ import annotations
 
-import struct
 from dataclasses import dataclass, field
+from enum import IntEnum, auto
+import struct
+from typing import Final, TypedDict
 
-MAGIC = b"NUP\x01"  # 'N','U','P', format major version 1
-TOC_MAGIC = b"TOC\x01"
-HEADER_SIZE = 0x80
-PKG_SIZE = 0x40
-DIR_SIZE = 0x18
-FILE_SIZE = 0x50
-EXTENT_ALIGN = 16
-NO_DIR = 0xFFFFFFFF
+MAGIC: Final = b"NUP\x01"  # 'N','U','P', format major version 1
+TOC_MAGIC: Final = b"TOC\x01"
+HEADER_SIZE: Final = 0x80
+PKG_SIZE: Final = 0x40
+DIR_SIZE: Final = 0x18
+FILE_SIZE: Final = 0x50
+EXTENT_ALIGN: Final = 16
+NO_DIR: Final = 0xFFFFFFFF
 
-CODEC_RAW = 0
-CODEC_ZSTD = 1
+class Codec(IntEnum):
+    RAW = 0
+    ZSTD = auto()
 
-KIND_BASE = 0
-KIND_UPDATE = 1
-KIND_ADDON = 2
-KIND_ADDON_UPDATE = 3
-KIND_SYSTEM = 4
+CODEC_RAW: Final = Codec.RAW
+CODEC_ZSTD: Final = Codec.ZSTD
+assert len(Codec) == 2
 
-KIND_NAMES = {
+class Kind(IntEnum):
+    BASE = 0
+    UPDATE = auto()
+    ADDON = auto()
+    ADDON_UPDATE = auto()
+    SYSTEM = auto()
+
+KIND_BASE: Final = Kind.BASE
+KIND_UPDATE: Final = Kind.UPDATE
+KIND_ADDON: Final = Kind.ADDON
+KIND_ADDON_UPDATE: Final = Kind.ADDON_UPDATE
+KIND_SYSTEM: Final = Kind.SYSTEM
+assert len(Kind) == 5
+
+KIND_NAMES: Final = {
     KIND_BASE: "base",
     KIND_UPDATE: "update",
     KIND_ADDON: "addon",
@@ -36,25 +51,38 @@ KIND_NAMES = {
 }
 
 # Meta TLV types (SPEC §5)
-TLV_NPDM = 0x0001
-TLV_NACP = 0x0002
-TLV_ICON = 0x0003
-TLV_DISPLAY_VERSION = 0x0004
-TLV_TITLE_NAME = 0x0005
-TLV_PUBLISHER = 0x0006
-TLV_BUILD_ID = 0x0007
-TLV_SOURCE_DUMP = 0x0008
-TLV_LOCALIZED_TITLES = 0x0009
-TLV_LOCALIZED_ICONS = 0x000A
+class TVL(IntEnum):
+    NPDM = 0
+    NACP = auto()
+    ICON = auto()
+    DISPLAY_VERSION = auto()
+    TITLE_NAME = auto()
+    PUBLISHER = auto()
+    BUILD_ID = auto()
+    SOURCE_DUMP = auto()
+    LOCALIZED_TITLES = auto()
+    LOCALIZED_ICONS = auto()
 
-PKG_FLAG_STANDALONE_UPDATE = 0x01
+TLV_NPDM: Final = TVL.NPDM
+TLV_NACP: Final = TVL.NACP
+TLV_ICON: Final = TVL.ICON
+TLV_DISPLAY_VERSION: Final = TVL.DISPLAY_VERSION
+TLV_TITLE_NAME: Final = TVL.TITLE_NAME
+TLV_PUBLISHER: Final = TVL.PUBLISHER
+TLV_BUILD_ID: Final = TVL.BUILD_ID
+TLV_SOURCE_DUMP: Final = TVL.SOURCE_DUMP
+TLV_LOCALIZED_TITLES: Final = TVL.LOCALIZED_TITLES
+TLV_LOCALIZED_ICONS: Final = TVL.LOCALIZED_ICONS
+assert len(TVL) == 10
 
-_super_s = struct.Struct("<4sHHQQ32sQQII16s32s")  # 128
-_pkg_s = struct.Struct("<QIIIIBBHIQI20x")  # 64
-_dir_s = struct.Struct("<IIIIQ")  # 24
-_file_s = struct.Struct("<IIQQQ32sBBH12x")  # 80
-_toc_head_s = struct.Struct("<4sIQQQQQ")  # 48
-_tlv_s = struct.Struct("<HHI")  # 8
+PKG_FLAG_STANDALONE_UPDATE: Final = 0x01
+
+_super_s: Final = struct.Struct("<4sHHQQ32sQQII16s32s")  # 128
+_pkg_s: Final = struct.Struct("<QIIIIBBHIQI20x")  # 64
+_dir_s: Final = struct.Struct("<IIIIQ")  # 24
+_file_s: Final = struct.Struct("<IIQQQ32sBBH12x")  # 80
+_toc_head_s: Final = struct.Struct("<4sIQQQQQ")  # 48
+_tlv_s: Final = struct.Struct("<HHI")  # 8
 
 # struct sizes must match the documented record sizes exactly (SPEC §8);
 assert _super_s.size == HEADER_SIZE
@@ -100,6 +128,19 @@ class FileNode:
     src_path: str | None = field(default=None, repr=False)
 
 
+class Super(TypedDict):
+    header_size: int
+    header_version: int
+    toc_offset: int
+    toc_size: int
+    toc_sha256: bytes
+    blob_offset: int
+    file_size: int
+    package_count: int
+    flags: int
+    uuid: bytes
+
+
 def pack_super(magic: bytes, header_size: int, header_version: int, toc_offset: int,
                toc_size: int, toc_sha256: bytes, blob_offset: int, file_size: int,
                package_count: int, flags: int, uuid: bytes) -> bytes:
@@ -123,7 +164,7 @@ def pack_file(f: FileNode) -> bytes:
                         f.codec, f.codec_flags, 0)
 
 
-def parse_super(buf: bytes) -> dict:
+def parse_super(buf: bytes) -> Super:
     if len(buf) < HEADER_SIZE:
         raise NupError(f"superblock truncated: {len(buf)} < {HEADER_SIZE}")
     (magic, header_size, header_version, toc_offset, toc_size, toc_sha256,
@@ -138,10 +179,10 @@ def parse_super(buf: bytes) -> dict:
         raise NupError("superblock reserved bytes not zero")
     if flags != 0:
         raise NupError(f"unknown superblock flags {flags:#x}")
-    return dict(header_size=header_size, header_version=header_version,
-                toc_offset=toc_offset, toc_size=toc_size, toc_sha256=toc_sha256,
-                blob_offset=blob_offset, file_size=file_size,
-                package_count=package_count, flags=flags, uuid=uuid)
+    return Super(header_size=header_size, header_version=header_version,
+                 toc_offset=toc_offset, toc_size=toc_size, toc_sha256=toc_sha256,
+                 blob_offset=blob_offset, file_size=file_size,
+                 package_count=package_count, flags=flags, uuid=uuid)
 
 
 def parse_pkg(buf: bytes, off: int) -> Package:
@@ -154,3 +195,19 @@ def parse_pkg(buf: bytes, off: int) -> Package:
     return Package(title_id=title_id, root_dir=root, exefs_dir=exefs, romfs_dir=romfs,
                    version=version, kind=kind, flags=flags,
                    meta_offset=meta_offset, meta_size=meta_size)
+
+
+def parse_file(toc: bytes, pos: int) -> tuple[tuple[int, int], int, bytes, int, int, Codec]:
+    (off, ln, size, eoff, esz, sha, codec, cflags, _r4) = \
+        _file_s.unpack_from(toc, pos)
+    pos += FILE_SIZE
+    if codec not in Codec:
+        raise NupError(f"unknown extent codec {codec}")
+    codec = Codec(codec)
+    if cflags != 0:
+        raise NupError(f"unknown codec_flags {cflags}")
+    if size == 0 and (eoff != 0 or esz != 0 or codec != CODEC_RAW):
+        raise NupError("zero-size file with nonempty extent")
+    if size != 0 and esz == 0:
+        raise NupError(f"file with nonzero size but empty extent")
+    return ((off, ln), size, sha, eoff, esz, codec)

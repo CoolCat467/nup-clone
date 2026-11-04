@@ -8,16 +8,20 @@ DirObj/FileObj/Tree model the packer serializes.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import os
 import re
 import struct
+from typing import Final
 
 from . import format as F
 
-ARTIFACT_NAMES = {b".listing"}  # SPEC §6.3 reserved artifact names
-FILE_TAG = 0x8000_0000  # child-slot marker: slot >= FILE_TAG references files[]
-_DEC = re.compile(r"^\d+$")
-_HEX = re.compile(r"^[0-9a-fA-F]{16}$")
+# SPEC §6.3 reserved artifact names
+ARTIFACT_NAMES: Final = {b".listing"}
+# child-slot marker: slot >= FILE_TAG references files[]
+FILE_TAG: Final = 0x8000_0000
+_DEC: Final = re.compile(r"^\d+$")
+_HEX: Final = re.compile(r"^[0-9a-fA-F]{16}$")
 
 
 def parse_npdm_program_id(data: bytes) -> int | None:
@@ -28,47 +32,41 @@ def parse_npdm_program_id(data: bytes) -> int | None:
     off = data.find(b"ACI0")
     if off < 0 or off + 0x18 > len(data):
         return None
-    return struct.unpack_from("<Q", data, off + 0x10)[0]
+    return int(struct.unpack_from("<Q", data, off + 0x10)[0])
 
 
+@dataclass(slots=True)
 class DirObj:
-    __slots__ = ("name", "children", "id", "first_child", "child_count")
-
-    def __init__(self, name: bytes) -> None:
-        self.name = name
-        self.children: list[DirObj | FileObj] = []
-        self.id = -1
-        self.first_child = 0
-        self.child_count = 0
+    name: bytes
+    children: list[DirObj | FileObj] = field(default_factory=list)
+    id: int = -1
+    first_child: int = 0
+    child_count: int = 0
 
 
+@dataclass(slots=True)
 class FileObj:
-    __slots__ = ("name", "src_path", "size", "sha256", "extent_offset",
-                 "extent_size", "codec", "codec_flags")
-
-    def __init__(self, name: bytes, src_path: str) -> None:
-        self.name = name
-        self.src_path = src_path
-        self.size = 0
-        self.sha256 = b"\0" * 32
-        self.extent_offset = 0
-        self.extent_size = 0
-        self.codec = F.CODEC_RAW
-        self.codec_flags = 0
+    name: bytes
+    src_path: str
+    size: int = 0
+    sha256: bytes = b"\0" * 32
+    extent_offset: int = 0
+    extent_size: int = 0
+    codec: F.Codec = F.CODEC_RAW
+    codec_flags: int = 0
 
 
+@dataclass(slots=True)
 class PackInput:
     """One package to store: kind, ids, and the source directory of its tree."""
 
-    def __init__(self, kind: int, src: str, title_id: int = 0, version: int = 0,
-                 flags: int = 0) -> None:
-        self.kind = kind
-        self.src = src
-        self.title_id = title_id
-        self.version = version
-        self.flags = flags
-        self.npdm: bytes | None = None
-        self.build_id: bytes | None = None
+    kind: F.Kind
+    src: str
+    title_id: int = 0
+    version: int = 0
+    flags: int = 0
+    npdm: bytes | None = None
+    build_id: bytes | None = None
 
 
 def _find_npdm(src: str) -> str | None:
@@ -165,13 +163,11 @@ def discover(src: str, base_title_id: int | None) -> list[PackInput]:
         _resolve_title_id(base, base_title_id)
         if _has_files(base.src):
             packages.append(base)
-        else:
+            if has_updates:
+                packages.extend(_collect_updates(upd_dir, base.title_id, flags=0))
+        elif has_updates:
             # an empty base/ is not a game: drop it so a real update can boot
             # as the standalone program instead of hiding behind a dead base
-            base = None
-        if base is not None and has_updates:
-            packages.extend(_collect_updates(upd_dir, base.title_id, flags=0))
-        elif has_updates and base is None:
             packages.extend(_collect_updates(upd_dir, base_title_id or 0,
                                              flags=F.PKG_FLAG_STANDALONE_UPDATE))
         dlc_dir = os.path.join(src, "dlc")
@@ -199,23 +195,26 @@ def discover(src: str, base_title_id: int | None) -> list[PackInput]:
     return packages
 
 
+@dataclass(slots=True)
 class Tree:
     """Node store for one pack run (global across packages)."""
 
-    def __init__(self, artifacts: set[bytes]) -> None:
-        self.artifacts = artifacts
-        self.dirs: list[DirObj] = []
-        self.files: list[FileObj] = []
-        self.children: list[int] = []  # serial ids; see assign()
-        self.pool: dict[bytes, int] = {}
-        self.pool_size = 0
+    artifacts: set[bytes]
+    dirs: list[DirObj] = field(default_factory=list)
+    files: list[FileObj] = field(default_factory=list)
+    # serial ids; see assign()
+    children: list[int] = field(default_factory=list)
+    pool: dict[bytes, int] = field(default_factory=dict)
+
+    @property
+    def pool_size(self) -> int:
+        return sum(map(len, self.pool))
 
     def intern(self, name: bytes) -> int:
         off = self.pool.get(name)
         if off is None:
             off = self.pool_size
             self.pool[name] = off
-            self.pool_size += len(name)
         return off
 
     def add_tree(self, src: str) -> DirObj:
@@ -226,14 +225,14 @@ class Tree:
         try:
             entries = sorted(os.scandir(src),
                              key=lambda e: e.name.encode("utf-8", "surrogateescape"))
-        except OSError as e:
-            raise SystemExit(f"pack: cannot read {src}: {e}")
-        for e in entries:
-            ename = e.name.encode("utf-8", "surrogateescape")
-            if e.is_dir(follow_symlinks=False):
-                node.children.append(self._walk(e.path, ename))
+        except OSError as exc:
+            raise SystemExit(f"pack: cannot read {src}: {exc}")
+        for entry in entries:
+            ename = entry.name.encode("utf-8", "surrogateescape")
+            if entry.is_dir(follow_symlinks=False):
+                node.children.append(self._walk(entry.path, ename))
             elif ename not in self.artifacts:
-                node.children.append(FileObj(ename, e.path))
+                node.children.append(FileObj(ename, entry.path))
         return node
 
     def assign(self, roots: list[DirObj]) -> None:
