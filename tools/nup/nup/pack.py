@@ -138,6 +138,7 @@ def _write_extents(out, tree: Tree, zc, blob_cursor: int, progress) -> int:
                         compressed = not bail
                     if not compressed:
                         out.seek(aligned)  # overwrite whatever the bailed frame wrote
+                        fh.seek(0)  # the bailed compression pass left the input mid-file
                         left = fnode.size
                         while left:
                             chunk = fh.read(min(_STREAM_CHUNK, left))
