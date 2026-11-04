@@ -3,6 +3,8 @@ name = "nup"
 version = "0.1.0"
 description = "Reference implementation of the NUP (NX Package) container format for Switch 1/2 game dumps"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["../../LICENSE"]
 dependencies = ["zstandard>=0.22"]
 
 [project.scripts]
