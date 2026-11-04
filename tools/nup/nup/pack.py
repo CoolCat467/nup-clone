@@ -54,36 +54,105 @@ def _derive_uuid(pkg_records: list[F.Package]) -> bytes:
     return h.digest()[:16]
 
 
+STREAM_THRESHOLD = 256 << 20  # files above this are streamed, not held in RAM
+_STREAM_CHUNK = 4 << 20
+
+
 def _write_extents(out, tree: Tree, zc, blob_cursor: int, progress) -> int:
     """Append file extents (dedup by hash, 16-byte aligned). Returns end offset."""
     total = len(tree.files)
     seen: dict[bytes, tuple[int, int, int]] = {}  # sha256 -> (offset, size, codec)
     for i, fnode in enumerate(tree.files):
         with open(fnode.src_path, "rb") as fh:
-            data = fh.read()
-        fnode.size = len(data)
-        fnode.sha256 = hashlib.sha256(data).digest()
-        hit = seen.get(fnode.sha256)
-        if hit is not None and fnode.size > 0:
-            # Dedup (SPEC §3.6): identical content shares one extent.
-            fnode.extent_offset, fnode.extent_size, fnode.codec = hit
-        elif fnode.size == 0:
-            fnode.extent_offset, fnode.extent_size, fnode.codec = 0, 0, F.CODEC_RAW
-        else:
-            payload, codec = data, F.CODEC_RAW
-            if zc is not None:
-                comp = zc.compress(data)
-                if len(comp) < fnode.size:
-                    payload, codec = comp, F.CODEC_ZSTD
-            aligned = (blob_cursor + F.EXTENT_ALIGN - 1) & ~(F.EXTENT_ALIGN - 1)
-            out.write(b"\0" * (aligned - blob_cursor))  # zero the gap
-            blob_cursor = aligned
-            fnode.extent_offset = blob_cursor
-            fnode.extent_size = len(payload)
-            fnode.codec = codec
-            out.write(payload)
-            blob_cursor += len(payload)
-            seen[fnode.sha256] = (fnode.extent_offset, fnode.extent_size, fnode.codec)
+            fnode.size = os.path.getsize(fnode.src_path)
+
+            # Pass 1 - hash the whole file (streamed) for the dedup table.
+            h = hashlib.sha256()
+            left = fnode.size
+            while left:
+                chunk = fh.read(min(_STREAM_CHUNK, left))
+                if not chunk:
+                    raise SystemExit(
+                        f"pack: {fnode.src_path!r} changed while packing")
+                h.update(chunk)
+                left -= len(chunk)
+            fnode.sha256 = h.digest()
+
+            hit = seen.get(fnode.sha256)
+            if hit is not None and fnode.size > 0:
+                # Dedup (SPEC §3.6): identical content shares one extent.
+                fnode.extent_offset, fnode.extent_size, fnode.codec = hit
+            elif fnode.size == 0:
+                fnode.extent_offset, fnode.extent_size, fnode.codec = 0, 0, F.CODEC_RAW
+            else:
+                fh.seek(0)
+                aligned = (blob_cursor + F.EXTENT_ALIGN - 1) & ~(F.EXTENT_ALIGN - 1)
+                out.write(b"\0" * (aligned - blob_cursor))  # zero the gap
+                blob_cursor = aligned
+                fnode.extent_offset = aligned
+
+                if fnode.size <= STREAM_THRESHOLD:
+                    # Small enough to hold in RAM; one-shot keeps frames
+                    # byte-identical with earlier builds.
+                    data = fh.read()
+                    payload, codec = data, F.CODEC_RAW
+                    if zc is not None:
+                        comp = zc.compress(data)
+                        if len(comp) < fnode.size:
+                            payload, codec = comp, F.CODEC_ZSTD
+                    out.write(payload)
+                    fnode.extent_size = len(payload)
+                    fnode.codec = codec
+                    blob_cursor = aligned + len(payload)
+                else:
+                    # Stream in chunks: compress written as produced, bailing
+                    # to raw the moment the output stops being smaller.
+                    compressed = False
+                    if zc is not None:
+                        co = zc.compressobj()
+                        stored = 0
+                        bail = False
+                        left = fnode.size
+                        while left and not bail:
+                            chunk = fh.read(min(_STREAM_CHUNK, left))
+                            if not chunk:
+                                raise SystemExit(
+                                    f"pack: {fnode.src_path!r} changed while packing")
+                            left -= len(chunk)
+                            consumed = fnode.size - left
+                            piece = co.compress(chunk)
+                            if piece:
+                                out.write(piece)
+                                stored += len(piece)
+                                if stored >= consumed:
+                                    # output has caught up with input: the
+                                    # final frame cannot end up smaller
+                                    bail = True
+                        if not bail:
+                            piece = co.flush()
+                            if piece:
+                                out.write(piece)
+                                stored += len(piece)
+                            if stored >= fnode.size:
+                                bail = True
+                        compressed = not bail
+                    if not compressed:
+                        out.seek(aligned)  # overwrite whatever the bailed frame wrote
+                        left = fnode.size
+                        while left:
+                            chunk = fh.read(min(_STREAM_CHUNK, left))
+                            if not chunk:
+                                raise SystemExit(
+                                    f"pack: {fnode.src_path!r} changed while packing")
+                            left -= len(chunk)
+                            out.write(chunk)
+                        fnode.extent_size = fnode.size
+                        fnode.codec = F.CODEC_RAW
+                    else:
+                        fnode.extent_size = stored
+                        fnode.codec = F.CODEC_ZSTD
+                    blob_cursor = aligned + fnode.extent_size
+                seen[fnode.sha256] = (fnode.extent_offset, fnode.extent_size, fnode.codec)
         if progress:
             progress(i + 1, total, fnode)
     return blob_cursor
